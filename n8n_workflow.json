@@ -1,0 +1,191 @@
+{
+  "name": "CS QA Studio - Evaluation Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/ingest/batch",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file_path",
+              "value": "./sample_data/tickets_dev.jsonl"
+            },
+            {
+              "name": "split",
+              "value": "dev"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Ingest Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/evaluate/run",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"dataset_split\": \"dev\",\n  \"prompt_version\": \"v1\",\n  \"model_version\": \"mock\",\n  \"docs_version\": \"v1\",\n  \"sampling_config\": {\n    \"gate_fail_to_human\": true,\n    \"low_score_threshold\": 2\n  }\n}",
+        "options": {}
+      },
+      "name": "Run Evaluation",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.gate_fail_count }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Check Gate Failures",
+      "type": "n8n-nodes-base.if",
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/api/v1/human/queue?limit=50",
+        "options": {}
+      },
+      "name": "Get Human Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/api/v1/reports/summary?dataset_split=dev",
+        "options": {}
+      },
+      "name": "Get Summary Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "channel": "#cs-qa-alerts",
+        "text": "=🚨 CS QA Alert\n\n*Gate Failures Detected*\n\n• Processed: {{ $node[\"Run Evaluation\"].json.processed_count }}\n• Gate Failures: {{ $node[\"Run Evaluation\"].json.gate_fail_count }}\n• Human Queue: {{ $node[\"Run Evaluation\"].json.human_queue_count }}\n\n*Top Failure Tags:*\n{{ Object.entries($node[\"Run Evaluation\"].json.top_tags).slice(0,5).map(([k,v]) => `• ${k}: ${v}`).join('\\n') }}\n\n<http://localhost:3001/queue|Review Queue →>",
+        "otherOptions": {}
+      },
+      "name": "Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "position": [1250, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "name": "No Failures",
+      "type": "n8n-nodes-base.noOp",
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Ingest Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Tickets": {
+      "main": [
+        [
+          {
+            "node": "Run Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Check Gate Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Gate Failures": {
+      "main": [
+        [
+          {
+            "node": "Get Human Queue",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Summary Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Human Queue": {
+      "main": [
+        [
+          {
+            "node": "Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "tags": [
+    {
+      "name": "cs-qa",
+      "id": "1"
+    }
+  ],
+  "triggerCount": 0,
+  "versionId": "1"
+}

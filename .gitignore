@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.db-journal
+*.sqlite3
+
+# Dataset files (processed data)
+sample_data/
+backend/data/
+
+# Vector store (rebuilt on startup)
+vector_store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# Testing / caching
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Logs
+*.log
+
+# n8n credentials (workflow JSON is fine)
+# n8n_workflow.json is tracked
+
+# Claude Code
+.claude/
+
+# MCP config (local)
+.mcp.json
