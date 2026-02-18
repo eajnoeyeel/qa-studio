@@ -91,10 +91,19 @@ EMBEDDING_MODEL=text-embedding-3-small
 ### Ingest Batch
 
 ```bash
-# Ingest tickets from JSONL file
+# Ingest tickets from JSONL file (use absolute path — server runs from backend/)
 curl -X POST "http://localhost:8000/api/v1/ingest/batch" \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "./sample_data/tickets_dev.jsonl", "split": "dev"}'
+  -d '{"file_path": "/absolute/path/to/sample_data/tickets_dev.jsonl", "split": "dev"}'
+```
+
+### Ingest Upload
+
+```bash
+# Upload a JSONL or CSV file directly
+curl -X POST "http://localhost:8000/api/v1/ingest/upload" \
+  -F "file=@./sample_data/tickets_dev.jsonl" \
+  -F "split=dev"
 ```
 
 ### Run Evaluation
@@ -149,6 +158,19 @@ curl -X POST "http://localhost:8000/api/v1/human/review" \
 ```bash
 curl "http://localhost:8000/api/v1/reports/summary?dataset_split=dev"
 ```
+
+### Other Endpoints
+
+| Method | Endpoint                          | Description                        |
+| ------ | --------------------------------- | ---------------------------------- |
+| GET    | `/api/v1/tickets`                 | List tickets (pagination, split filter) |
+| GET    | `/api/v1/tickets/{id}`            | Get ticket with evaluations        |
+| GET    | `/api/v1/evaluations`             | List evaluations (filter by ticket/version) |
+| GET    | `/api/v1/experiments`             | List all A/B experiments           |
+| GET    | `/api/v1/experiments/{id}`        | Get experiment details             |
+| GET    | `/api/v1/documents`               | List RAG-indexed documents         |
+| POST   | `/api/v1/documents/reindex`       | Rebuild the RAG index              |
+| GET    | `/api/v1/health`                  | Health check                       |
 
 ## Data Format
 
@@ -322,6 +344,7 @@ SaaS CS QA Studio/
 │   │   ├── services/      # Pipeline, instrumentation, experiment
 │   │   └── main.py        # FastAPI app
 │   ├── tests/             # Pytest tests
+│   ├── scripts/           # Data preparation (prepare_data.py)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -332,8 +355,9 @@ SaaS CS QA Studio/
 ├── docs/
 │   ├── policies/          # Internal policy documents
 │   └── help_center/       # Help center article summaries
-├── sample_data/           # Sample ticket JSONL files
-├── scripts/               # Utility scripts
+├── sample_data/           # Sample ticket JSONL files (dev, test, ab_eval splits)
+├── scripts/               # Scenario generation utilities
+├── CLAUDE.md              # Claude Code project context
 └── README.md
 ```
 
@@ -341,16 +365,29 @@ SaaS CS QA Studio/
 
 ```bash
 cd backend
+source .venv/bin/activate
 
-# Run all tests
-pytest
+# Run all tests (PYTHONPATH required)
+PYTHONPATH=. pytest
 
 # Run with coverage
-pytest --cov=app
+PYTHONPATH=. pytest --cov=app
 
 # Run specific test file
-pytest tests/test_mock_provider.py -v
+PYTHONPATH=. pytest tests/test_mock_provider.py -v
 ```
+
+## Data Preparation
+
+Raw ticket data (e.g., CSV exports) can be converted to the required JSONL format using the preparation script:
+
+```bash
+cd backend
+source .venv/bin/activate
+python scripts/prepare_data.py
+```
+
+This produces split JSONL files in `sample_data/` (dev, test, ab_eval) ready for ingestion.
 
 ## Development
 
