@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # RAG
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     RAG_TOP_K: int = 5
-    DOCS_PATH: str = "./docs"
+    DOCS_PATH: str = "../docs"
     VECTOR_STORE_PATH: str = "./vector_store"
 
     # Sampling thresholds
