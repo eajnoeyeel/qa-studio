@@ -28,17 +28,6 @@ export default function TicketsPage() {
   }, [page, split]);
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/tickets" className="active">Tickets</Link>
-          <Link href="/experiments">Experiments</Link>
-          <Link href="/queue">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         <div className="card">
           <div className="card-header">
@@ -111,6 +100,5 @@ export default function TicketsPage() {
           )}
         </div>
       </main>
-    </>
   );
 }

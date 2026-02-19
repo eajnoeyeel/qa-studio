@@ -54,17 +54,6 @@ export default function ExperimentsPage() {
   }
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/tickets">Tickets</Link>
-          <Link href="/experiments" className="active">Experiments</Link>
-          <Link href="/queue">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         {/* New Experiment Form */}
         <div className="card">
@@ -191,6 +180,5 @@ export default function ExperimentsPage() {
           )}
         </div>
       </main>
-    </>
   );
 }

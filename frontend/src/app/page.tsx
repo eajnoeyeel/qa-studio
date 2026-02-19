@@ -39,17 +39,6 @@ export default function Home() {
   if (error) return <div className="error">{error}</div>;
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/" className="active">Dashboard</Link>
-          <Link href="/tickets">Tickets</Link>
-          <Link href="/experiments">Experiments</Link>
-          <Link href="/queue">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         {/* Stats Overview */}
         {stats && (
@@ -147,6 +136,5 @@ export default function Home() {
           </div>
         </div>
       </main>
-    </>
   );
 }

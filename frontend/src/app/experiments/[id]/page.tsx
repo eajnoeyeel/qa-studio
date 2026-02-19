@@ -32,17 +32,6 @@ export default function ExperimentDetailPage() {
   const summary = experiment.summary;
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/tickets">Tickets</Link>
-          <Link href="/experiments" className="active">Experiments</Link>
-          <Link href="/queue">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         <div style={{ marginBottom: 16 }}>
           <Link href="/experiments">&larr; Back to Experiments</Link>
@@ -227,6 +216,5 @@ export default function ExperimentDetailPage() {
           </>
         )}
       </main>
-    </>
   );
 }

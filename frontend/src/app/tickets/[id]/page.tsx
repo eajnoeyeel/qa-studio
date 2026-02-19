@@ -37,17 +37,6 @@ export default function TicketDetailPage() {
   const judgeOutput = latestEval?.judge_output;
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/tickets" className="active">Tickets</Link>
-          <Link href="/experiments">Experiments</Link>
-          <Link href="/queue">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         <div style={{ marginBottom: 16 }}>
           <Link href="/tickets">&larr; Back to Tickets</Link>
@@ -208,6 +197,5 @@ export default function TicketDetailPage() {
           </div>
         )}
       </main>
-    </>
   );
 }
