@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api, HumanQueueItem } from '@/lib/api';
+import { TAXONOMY_LABELS, SCORE_DIMENSIONS } from '@/lib/constants';
 
 export default function QueuePage() {
   const [queue, setQueue] = useState<HumanQueueItem[]>([]);
@@ -49,17 +50,6 @@ export default function QueuePage() {
   }
 
   return (
-    <>
-      <header className="header">
-        <h1>CS QA Studio</h1>
-        <nav className="nav">
-          <Link href="/">Dashboard</Link>
-          <Link href="/tickets">Tickets</Link>
-          <Link href="/experiments">Experiments</Link>
-          <Link href="/queue" className="active">Review Queue</Link>
-        </nav>
-      </header>
-
       <main className="container">
         <div className="card">
           <div className="card-header">
@@ -160,33 +150,31 @@ export default function QueuePage() {
                     onChange={(e) => setReviewForm({ ...reviewForm, gold_label: e.target.value })}
                   >
                     <option value="">-- Select --</option>
-                    <option value="billing_seats">billing_seats</option>
-                    <option value="billing_refund">billing_refund</option>
-                    <option value="workspace_access">workspace_access</option>
-                    <option value="permission_sharing">permission_sharing</option>
-                    <option value="login_sso">login_sso</option>
-                    <option value="import_export_sync">import_export_sync</option>
-                    <option value="bug_report">bug_report</option>
-                    <option value="feature_request">feature_request</option>
+                    {TAXONOMY_LABELS.map(label => (
+                      <option key={label} value={label}>{label}</option>
+                    ))}
                   </select>
                 </div>
 
                 <div style={{ marginBottom: 16 }}>
                   <label style={{ display: 'block', marginBottom: 8 }}>Gold Scores (1-5)</label>
                   <div className="grid grid-2" style={{ gap: 8 }}>
-                    {['understanding', 'info_strategy', 'actionability', 'communication'].map(score => (
+                    {SCORE_DIMENSIONS.map(score => (
                       <div key={score} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ flex: 1 }}>{score}</span>
                         <select
                           className="select"
                           value={reviewForm.gold_scores[score] || ''}
-                          onChange={(e) => setReviewForm({
-                            ...reviewForm,
-                            gold_scores: {
-                              ...reviewForm.gold_scores,
-                              [score]: parseInt(e.target.value) || 0
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            const updated = { ...reviewForm.gold_scores };
+                            if (val >= 1 && val <= 5) {
+                              updated[score] = val;
+                            } else {
+                              delete updated[score];
                             }
-                          })}
+                            setReviewForm({ ...reviewForm, gold_scores: updated });
+                          }}
                         >
                           <option value="">--</option>
                           {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
@@ -215,6 +203,5 @@ export default function QueuePage() {
           </div>
         )}
       </main>
-    </>
   );
 }
