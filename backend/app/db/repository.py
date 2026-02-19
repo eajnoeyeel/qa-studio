@@ -124,14 +124,15 @@ class TicketRepository:
         """Commit pending changes."""
         self.db.commit()
 
-    def update_normalized(self, ticket_id: str, normalized_text: str, masked_text: str) -> Optional[TicketInDB]:
+    def update_normalized(self, ticket_id: str, normalized_text: str, masked_text: str, commit: bool = True) -> Optional[TicketInDB]:
         model = self.db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
         if not model:
             return None
         model.normalized_text = normalized_text
         model.masked_text = masked_text
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
         return self._to_schema(model)
 
     def _to_schema(self, model: TicketModel) -> TicketInDB:
@@ -161,7 +162,9 @@ class EvaluationRepository:
         return self._to_schema(model)
 
     def get_by_ticket(self, ticket_id: str) -> List[EvaluationInDB]:
-        models = self.db.query(EvaluationModel).filter(EvaluationModel.ticket_id == ticket_id).all()
+        models = self.db.query(EvaluationModel).filter(
+            EvaluationModel.ticket_id == ticket_id
+        ).order_by(EvaluationModel.created_at.desc()).all()
         return [self._to_schema(m) for m in models]
 
     def get_by_version(
@@ -177,7 +180,7 @@ class EvaluationRepository:
         ).all()
         return [self._to_schema(m) for m in models]
 
-    def create(self, evaluation: EvaluationCreate, trace_id: Optional[str] = None) -> EvaluationInDB:
+    def create(self, evaluation: EvaluationCreate, trace_id: Optional[str] = None, commit: bool = True) -> EvaluationInDB:
         model = EvaluationModel(
             id=generate_id(),
             ticket_id=evaluation.ticket_id,
@@ -187,17 +190,21 @@ class EvaluationRepository:
             trace_id=trace_id,
         )
         self.db.add(model)
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
+        else:
+            self.db.flush()
         return self._to_schema(model)
 
-    def update_classification(self, eval_id: str, classification: ClassificationResult) -> Optional[EvaluationInDB]:
+    def update_classification(self, eval_id: str, classification: ClassificationResult, commit: bool = True) -> Optional[EvaluationInDB]:
         model = self.db.query(EvaluationModel).filter(EvaluationModel.id == eval_id).first()
         if not model:
             return None
         model.classification_json = json_serializer(classification.model_dump())
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
         return self._to_schema(model)
 
     def _to_schema(self, model: EvaluationModel) -> EvaluationInDB:
@@ -247,7 +254,7 @@ class JudgeOutputRepository:
             return None
         return self._to_schema(model)
 
-    def create(self, eval_id: str, output: JudgeOutput) -> JudgeOutputInDB:
+    def create(self, eval_id: str, output: JudgeOutput, commit: bool = True) -> JudgeOutputInDB:
         model = JudgeOutputModel(
             id=generate_id(),
             evaluation_id=eval_id,
@@ -259,8 +266,11 @@ class JudgeOutputRepository:
             rag_citations_json=json_serializer(output.rag_citations),
         )
         self.db.add(model)
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
+        else:
+            self.db.flush()
         return self._to_schema(model)
 
     def _to_schema(self, model: JudgeOutputModel) -> JudgeOutputInDB:
@@ -298,7 +308,8 @@ class HumanQueueRepository:
         ticket_id: str,
         evaluation_id: str,
         reason: HumanQueueReason,
-        priority: int = 0
+        priority: int = 0,
+        commit: bool = True,
     ) -> HumanQueueItem:
         model = HumanQueueModel(
             id=generate_id(),
@@ -308,8 +319,11 @@ class HumanQueueRepository:
             priority=priority,
         )
         self.db.add(model)
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
+        else:
+            self.db.flush()
         return self._to_schema(model)
 
     def mark_reviewed(self, queue_id: str) -> bool:

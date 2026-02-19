@@ -1,6 +1,7 @@
 """Evaluation pipeline service."""
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 import logging
@@ -49,7 +50,7 @@ class EvaluationPipeline:
         )
 
         # Create trace
-        trace_id = f"eval_{ticket.id}_{int(time.time())}"
+        trace_id = f"eval_{ticket.id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         trace = self.instrumentation.create_trace(
             trace_id=trace_id,
             name=f"evaluate_ticket_{ticket.id}",
@@ -86,7 +87,7 @@ class EvaluationPipeline:
 
             # Update ticket with normalized/masked text
             ticket_repo = TicketRepository(self.db_session)
-            ticket_repo.update_normalized(ticket.id, normalized_text, masked_text)
+            ticket_repo.update_normalized(ticket.id, normalized_text, masked_text, commit=False)
 
             # Step 3: Classify
             classification = await self._classify(masked_text, trace)
@@ -108,7 +109,7 @@ class EvaluationPipeline:
                 trace
             )
 
-            # Create evaluation record
+            # Persist evaluation, classification, and judge output atomically
             eval_repo = EvaluationRepository(self.db_session)
             evaluation = eval_repo.create(
                 EvaluationCreate(
@@ -117,15 +118,14 @@ class EvaluationPipeline:
                     model_version=model_version,
                     docs_version=docs_version,
                 ),
-                trace_id=trace_id
+                trace_id=trace_id,
+                commit=False,
             )
 
-            # Update classification
-            eval_repo.update_classification(evaluation.id, classification)
+            eval_repo.update_classification(evaluation.id, classification, commit=False)
 
-            # Save judge output
             judge_repo = JudgeOutputRepository(self.db_session)
-            judge_repo.create(evaluation.id, judge_output)
+            judge_repo.create(evaluation.id, judge_output, commit=False)
 
             # Record scores in Langfuse
             for score in judge_output.scores:
@@ -158,8 +158,12 @@ class EvaluationPipeline:
                     evaluation_id=evaluation.id,
                     reason=queue_reason,
                     priority=self._calculate_priority(queue_reason, judge_output),
+                    commit=False,
                 )
                 result["human_queued"] = True
+
+            # Commit all DB writes atomically
+            self.db_session.commit()
 
             # Compile result
             result["gate_failed"] = not judge_output.gate_passed
@@ -169,6 +173,7 @@ class EvaluationPipeline:
             result["classification"] = classification.label
 
         except Exception as e:
+            self.db_session.rollback()
             logger.error(f"Error processing ticket {ticket.id}: {e}")
             self.instrumentation.record_span(
                 trace,
