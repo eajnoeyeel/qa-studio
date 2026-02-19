@@ -60,7 +60,7 @@ class ExperimentService:
         # Get tickets
         ticket_repo = TicketRepository(self.db_session)
         if ticket_ids:
-            tickets = [ticket_repo.get(tid) for tid in ticket_ids if ticket_repo.get(tid)]
+            tickets = [t for tid in ticket_ids if (t := ticket_repo.get(tid))]
         else:
             tickets, _ = ticket_repo.get_all(split=dataset_split, page=1, page_size=1000)
 
