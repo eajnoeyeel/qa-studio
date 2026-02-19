@@ -271,7 +271,7 @@ class ExperimentInDB(BaseModel):
 
 class IngestRequest(BaseModel):
     """Request for batch ingestion."""
-    file_path: Optional[str] = None  # Server local path
+    file_path: str = Field(..., min_length=1, description="Server local path (absolute or relative to cwd)")
     split: DatasetSplit = DatasetSplit.DEV
 
 

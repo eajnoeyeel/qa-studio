@@ -76,8 +76,8 @@ def test_ingest_without_file_or_path(client):
         "/api/v1/ingest/batch",
         json={"split": "dev"}
     )
-    # Should return 400 because no file provided
-    assert response.status_code == 400
+    # Should return 422 because file_path is a required field
+    assert response.status_code == 422
 
 
 def test_evaluate_run_validation(client):
