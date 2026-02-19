@@ -12,7 +12,8 @@ from ..models.schemas import (
     IngestRequest, IngestResponse, EvaluateRunRequest, EvaluateRunResponse,
     ABExperimentRequest, ABExperimentResponse, TicketCreate, TicketInDB,
     TicketListResponse, EvaluationInDB, HumanReviewCreate, HumanReviewInDB,
-    HumanQueueItem, ReportSummaryResponse, ExperimentInDB, Message, DatasetSplit
+    HumanQueueItem, ReportSummaryResponse, ExperimentInDB, Message, DatasetSplit,
+    DocumentMeta
 )
 from ..models.database import init_db
 from ..db.repository import (
@@ -53,17 +54,23 @@ def get_instrumentation(db: Session = Depends(get_db)) -> LangfuseInstrumentatio
     )
 
 
+_rag_retriever: Optional[RAGRetriever] = None
+
+
 def get_rag_retriever() -> RAGRetriever:
-    """Get RAG retriever."""
-    use_mock = settings.LLM_PROVIDER == "mock" or not settings.OPENAI_API_KEY
-    indexer = RAGIndexer(
-        docs_path=settings.DOCS_PATH,
-        vector_store_path=settings.VECTOR_STORE_PATH,
-        embedding_model=settings.EMBEDDING_MODEL,
-        use_mock=use_mock,
-    )
-    indexer.load_index() or indexer.build_index()
-    return RAGRetriever(indexer)
+    """Get cached RAG retriever (built once at startup or on first request)."""
+    global _rag_retriever
+    if _rag_retriever is None:
+        use_mock = settings.LLM_PROVIDER == "mock" or not settings.OPENAI_API_KEY
+        indexer = RAGIndexer(
+            docs_path=settings.DOCS_PATH,
+            vector_store_path=settings.VECTOR_STORE_PATH,
+            embedding_model=settings.EMBEDDING_MODEL,
+            use_mock=use_mock,
+        )
+        indexer.load_index() or indexer.build_index()
+        _rag_retriever = RAGRetriever(indexer)
+    return _rag_retriever
 
 
 # ==================== INGEST ====================
@@ -206,7 +213,7 @@ async def evaluate_run(
 
     # Get tickets
     if request.ticket_ids:
-        tickets = [ticket_repo.get(tid) for tid in request.ticket_ids if ticket_repo.get(tid)]
+        tickets = [t for tid in request.ticket_ids if (t := ticket_repo.get(tid))]
     else:
         tickets, _ = ticket_repo.get_all(split=request.dataset_split, page=1, page_size=1000)
 
@@ -369,6 +376,7 @@ async def list_evaluations(
     ticket_id: Optional[str] = None,
     prompt_version: Optional[str] = None,
     model_version: Optional[str] = None,
+    docs_version: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """List evaluations with optional filters."""
@@ -377,7 +385,7 @@ async def list_evaluations(
     if ticket_id:
         evaluations = repo.get_by_ticket(ticket_id)
     elif prompt_version and model_version:
-        evaluations = repo.get_by_version(prompt_version, model_version, "v1")
+        evaluations = repo.get_by_version(prompt_version, model_version, docs_version or "v1")
     else:
         raise HTTPException(status_code=400, detail="Provide ticket_id or version filters")
 
@@ -509,8 +517,8 @@ async def list_documents(
 
 
 @router.post("/documents/reindex")
-async def reindex_documents():
-    """Rebuild the RAG index."""
+async def reindex_documents(db: Session = Depends(get_db)):
+    """Rebuild the RAG index and sync documents to DB."""
     use_mock = settings.LLM_PROVIDER == "mock" or not settings.OPENAI_API_KEY
     indexer = RAGIndexer(
         docs_path=settings.DOCS_PATH,
@@ -519,6 +527,29 @@ async def reindex_documents():
         use_mock=use_mock,
     )
     success = indexer.build_index()
+
+    # Persist indexed documents to DB so /documents listing stays in sync
+    if success:
+        doc_repo = DocumentRepository(db)
+        for doc in indexer.documents:
+            existing = doc_repo.get(doc["doc_id"])
+            if not existing:
+                doc_repo.create(
+                    DocumentMeta(
+                        doc_id=doc["doc_id"],
+                        title=doc["title"],
+                        source_url=doc.get("source_url"),
+                        version=doc.get("version", "v1"),
+                        tags=doc.get("tags", []),
+                        category=doc["category"],
+                    ),
+                    content=doc["content"],
+                )
+
+    # Update cached retriever
+    global _rag_retriever
+    _rag_retriever = RAGRetriever(indexer)
+
     return {"success": success, "document_count": len(indexer.documents)}
 
 
