@@ -1,176 +1,428 @@
 {
-  "name": "CS QA Studio - Evaluation Pipeline",
   "nodes": [
     {
       "parameters": {
         "rule": {
           "interval": [
             {
-              "field": "hours",
-              "hoursInterval": 24
+              "field": "cronExpression",
+              "expression": "0 2 * * 0"
             }
           ]
         }
       },
-      "name": "Daily Schedule",
+      "id": "1a2b3c4d-0001-0001-0001-000000000001",
+      "name": "Weekly Schedule (Sunday 02:00)",
       "type": "n8n-nodes-base.scheduleTrigger",
-      "position": [250, 300]
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        224
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8000/api/v1/ingest/batch",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "file_path",
-              "value": "./sample_data/tickets_dev.jsonl"
-            },
-            {
-              "name": "split",
-              "value": "dev"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "name": "Ingest Tickets",
-      "type": "n8n-nodes-base.httpRequest",
-      "position": [450, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:8000/api/v1/evaluate/run",
+        "url": "http://host.docker.internal:8000/api/v1/analysis/patterns",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"dataset_split\": \"dev\",\n  \"prompt_version\": \"v1\",\n  \"model_version\": \"mock\",\n  \"docs_version\": \"v1\",\n  \"sampling_config\": {\n    \"gate_fail_to_human\": true,\n    \"low_score_threshold\": 2\n  }\n}",
-        "options": {}
+        "jsonBody": "{\n  \"min_frequency\": 2,\n  \"top_k\": 10\n}",
+        "options": {
+          "timeout": 120000
+        }
       },
-      "name": "Run Evaluation",
+      "id": "1a2b3c4d-0002-0002-0002-000000000002",
+      "name": "Run Pattern Analysis",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [650, 300]
+      "typeVersion": 4.2,
+      "position": [
+        464,
+        320
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "number": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.gate_fail_count }}",
-              "operation": "larger",
-              "value2": 0
+              "id": "cond-patterns-found",
+              "leftValue": "={{ $json.patterns_found }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
             }
-          ]
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1a2b3c4d-0003-0003-0003-000000000003",
+      "name": "Patterns Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        688,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/suggestions/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"prompt_name\": \"judge_evaluate\",\n  \"top_k_patterns\": 5,\n  \"register_in_langfuse\": false\n}",
+        "options": {
+          "timeout": 120000
         }
       },
-      "name": "Check Gate Failures",
+      "id": "1a2b3c4d-0004-0004-0004-000000000004",
+      "name": "Generate Prompt Suggestions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        912,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-suggestions-found",
+              "leftValue": "={{ Array.isArray($json) ? $json.length : (($json && ($json.prompt_name || $json.suggested_prompt)) ? 1 : 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1a2b3c4d-0011-0011-0011-000000000011",
+      "name": "Suggestions Generated?",
       "type": "n8n-nodes-base.if",
-      "position": [850, 300]
+      "typeVersion": 2,
+      "position": [
+        1136,
+        224
+      ]
     },
     {
       "parameters": {
-        "url": "http://localhost:8000/api/v1/human/queue?limit=50",
-        "options": {}
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/proposals",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"prompt_name\": (Array.isArray($json) ? ($json[0]?.prompt_name || 'judge_evaluate') : ($json.prompt_name || 'judge_evaluate')),\n  \"current_version\": null,\n  \"proposed_prompt\": (Array.isArray($json) ? ($json[0]?.suggested_prompt || '') : ($json.suggested_prompt || '')),\n  \"created_by\": \"n8n-auto\"\n} }}",
+        "options": {
+          "timeout": 30000
+        }
       },
-      "name": "Get Human Queue",
+      "id": "1a2b3c4d-0005-0005-0005-000000000005",
+      "name": "Create Proposal",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [1050, 200]
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        128
+      ]
     },
     {
       "parameters": {
-        "url": "http://localhost:8000/api/v1/reports/summary?dataset_split=dev",
-        "options": {}
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/prompts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"name\": $('Create Proposal').item.json.prompt_name,\n  \"prompt\": $('Create Proposal').item.json.proposed_prompt,\n  \"labels\": [\n    ('candidate-' + $('Create Proposal').item.json.id)\n  ]\n} }}",
+        "options": {
+          "timeout": 30000
+        }
       },
-      "name": "Get Summary Report",
+      "id": "1a2b3c4d-0012-0012-0012-000000000012",
+      "name": "Register Candidate Prompt",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [1050, 400]
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        128
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
-        "channel": "#cs-qa-alerts",
-        "text": "=🚨 CS QA Alert\n\n*Gate Failures Detected*\n\n• Processed: {{ $node[\"Run Evaluation\"].json.processed_count }}\n• Gate Failures: {{ $node[\"Run Evaluation\"].json.gate_fail_count }}\n• Human Queue: {{ $node[\"Run Evaluation\"].json.human_queue_count }}\n\n*Top Failure Tags:*\n{{ Object.entries($node[\"Run Evaluation\"].json.top_tags).slice(0,5).map(([k,v]) => `• ${k}: ${v}`).join('\\n') }}\n\n<http://localhost:3001/queue|Review Queue →>",
-        "otherOptions": {}
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/experiment/ab",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"dataset_split\": \"ab_eval\",\n  \"docs_version\": \"v1\",\n  \"config_a\": {\n    \"prompt_version\": \"production\",\n    \"model_version\": \"mock\"\n  },\n  \"config_b\": {\n    \"prompt_version\": ('candidate-' + $('Create Proposal').item.json.id),\n    \"model_version\": \"mock\"\n  },\n  \"name\": ('AutoImprovement-AB-Test-' + $('Create Proposal').item.json.id)\n} }}",
+        "options": {
+          "timeout": 300000
+        }
       },
-      "name": "Slack Alert",
+      "id": "1a2b3c4d-0006-0006-0006-000000000006",
+      "name": "Run A/B Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://host.docker.internal:8000/api/v1/proposals/' + $('Create Proposal').item.json.id + '/test' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"experiment_id\": $json.experiment_id\n} }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "1a2b3c4d-0007-0007-0007-000000000007",
+      "name": "Link Proposal to Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2032,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#qa-improvements",
+          "mode": "name"
+        },
+        "text": "=🔄 *Self-Improvement Cycle Complete*\n\n• Patterns found: {{ $('Run Pattern Analysis').item.json.patterns_found }}\n• Top pattern: {{ $('Run Pattern Analysis').item.json.top_patterns[0]?.tags?.join(' + ') ?? 'N/A' }} (freq: {{ $('Run Pattern Analysis').item.json.top_patterns[0]?.frequency ?? 0 }})\n• Suggestion for: {{ $('Create Proposal').item.json.prompt_name }}\n• Proposal ID: `{{ $('Create Proposal').item.json.id }}`\n• A/B Experiment: `{{ $('Run A/B Test').item.json.experiment_id }}`\n\n*Action needed:* Review and approve or reject the proposal.\n→ UI (Experiment): <{{ 'http://localhost:3001/experiments/' + $('Run A/B Test').item.json.experiment_id }}|Open Experiment>\n→ API (Proposal): <{{ 'http://localhost:8000/api/v1/proposals/' + $('Create Proposal').item.json.id }}|View Proposal JSON>",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "1a2b3c4d-0008-0008-0008-000000000008",
+      "name": "Notify Slack - Improvement Ready",
       "type": "n8n-nodes-base.slack",
-      "position": [1250, 200],
+      "typeVersion": 2.2,
+      "position": [
+        2256,
+        128
+      ],
+      "webhookId": "762270cc-4b22-4830-8d03-127cf941ac39",
       "credentials": {
         "slackApi": {
-          "id": "YOUR_SLACK_CREDENTIAL_ID",
-          "name": "Slack API"
+          "id": "A6h0Pxj0ZmjaZea7",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#qa-improvements",
+          "mode": "name"
+        },
+        "text": "=ℹ️ *Self-Improvement Cycle: Suggestions Not Generated*\n\n• Patterns were found: {{ $('Run Pattern Analysis').item.json.patterns_found }}\n• Suggestion generator returned no candidate prompts\n• No proposal or A/B test was created for this run",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "1a2b3c4d-0013-0013-0013-000000000013",
+      "name": "Notify Slack - No Suggestions",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1360,
+        320
+      ],
+      "webhookId": "e9fbc331-7101-42b5-a743-906b9e273594",
+      "credentials": {
+        "slackApi": {
+          "id": "A6h0Pxj0ZmjaZea7",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#qa-improvements",
+          "mode": "name"
+        },
+        "text": "=✅ *Self-Improvement Cycle: No Action Needed*\n\n• Pattern analysis completed for this week\n• No recurring failure patterns detected (min frequency: 2)\n• System is performing within expected bounds\n• Total evaluations analyzed: {{ $('Run Pattern Analysis').item.json.total_evaluations_analyzed }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "1a2b3c4d-0009-0009-0009-000000000009",
+      "name": "Notify Slack - No Patterns",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        912,
+        416
+      ],
+      "webhookId": "fe63e23e-fba8-43ff-b881-b110a68d22b5",
+      "credentials": {
+        "slackApi": {
+          "id": "A6h0Pxj0ZmjaZea7",
+          "name": "Slack account"
         }
       }
     },
     {
       "parameters": {},
-      "name": "No Failures",
-      "type": "n8n-nodes-base.noOp",
-      "position": [1050, 500]
+      "id": "1a2b3c4d-0010-0010-0010-000000000010",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        416
+      ]
     }
   ],
   "connections": {
-    "Daily Schedule": {
+    "Weekly Schedule (Sunday 02:00)": {
       "main": [
         [
           {
-            "node": "Ingest Tickets",
+            "node": "Run Pattern Analysis",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ingest Tickets": {
+    "Run Pattern Analysis": {
       "main": [
         [
           {
-            "node": "Run Evaluation",
+            "node": "Patterns Found?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Run Evaluation": {
+    "Patterns Found?": {
       "main": [
         [
           {
-            "node": "Check Gate Failures",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Gate Failures": {
-      "main": [
-        [
-          {
-            "node": "Get Human Queue",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Get Summary Report",
+            "node": "Generate Prompt Suggestions",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "No Failures",
+            "node": "Notify Slack - No Patterns",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Get Human Queue": {
+    "Generate Prompt Suggestions": {
       "main": [
         [
           {
-            "node": "Slack Alert",
+            "node": "Suggestions Generated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suggestions Generated?": {
+      "main": [
+        [
+          {
+            "node": "Create Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Slack - No Suggestions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Proposal": {
+      "main": [
+        [
+          {
+            "node": "Register Candidate Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Candidate Prompt": {
+      "main": [
+        [
+          {
+            "node": "Run A/B Test",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run A/B Test": {
+      "main": [
+        [
+          {
+            "node": "Link Proposal to Test",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link Proposal to Test": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack - Improvement Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run Pattern Analysis",
             "type": "main",
             "index": 0
           }
@@ -178,14 +430,9 @@
       ]
     }
   },
-  "settings": {},
-  "staticData": null,
-  "tags": [
-    {
-      "name": "cs-qa",
-      "id": "1"
-    }
-  ],
-  "triggerCount": 0,
-  "versionId": "1"
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "558d88703fb65b2d0e44613bc35916258b0f0bf983c5d4730c00c424b77ca36a"
+  }
 }
