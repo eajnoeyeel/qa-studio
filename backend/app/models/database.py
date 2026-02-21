@@ -32,36 +32,28 @@ def json_deserializer(s: str) -> Any:
     return json.loads(s)
 
 
-class TicketModel(Base):
-    """Ticket database model."""
-    __tablename__ = "tickets"
+class EvalItemModel(Base):
+    """Eval item database model."""
+    __tablename__ = "eval_items"
 
     id = Column(String, primary_key=True)
     external_id = Column(String, nullable=True, index=True)
     split = Column(SQLEnum(DatasetSplit), default=DatasetSplit.DEV, index=True)
-    conversation_json = Column(Text, nullable=False)  # JSON
-    candidate_response = Column(Text, nullable=False)
+    system_prompt = Column(Text, nullable=True)
+    question = Column(Text, nullable=False)
+    response = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=True)  # JSON
-    normalized_text = Column(Text, nullable=True)
     masked_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    evaluations = relationship("EvaluationModel", back_populates="ticket")
+    evaluations = relationship("EvaluationModel", back_populates="item")
 
     @property
-    def conversation(self) -> List[Dict]:
-        return json_deserializer(self.conversation_json) or []
-
-    @conversation.setter
-    def conversation(self, value: List[Dict]):
-        self.conversation_json = json_serializer(value)
-
-    @property
-    def ticket_metadata(self) -> Optional[Dict]:
+    def item_metadata(self) -> Optional[Dict]:
         return json_deserializer(self.metadata_json)
 
-    @ticket_metadata.setter
-    def ticket_metadata(self, value: Optional[Dict]):
+    @item_metadata.setter
+    def item_metadata(self, value: Optional[Dict]):
         self.metadata_json = json_serializer(value) if value else None
 
 
@@ -70,7 +62,7 @@ class EvaluationModel(Base):
     __tablename__ = "evaluations"
 
     id = Column(String, primary_key=True)
-    ticket_id = Column(String, ForeignKey("tickets.id"), nullable=False, index=True)
+    item_id = Column(String, ForeignKey("eval_items.id"), nullable=False, index=True)
     prompt_version = Column(String, nullable=False, index=True)
     model_version = Column(String, nullable=False, index=True)
     docs_version = Column(String, nullable=False, index=True)
@@ -78,7 +70,7 @@ class EvaluationModel(Base):
     trace_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    ticket = relationship("TicketModel", back_populates="evaluations")
+    item = relationship("EvalItemModel", back_populates="evaluations")
     judge_output = relationship("JudgeOutputModel", back_populates="evaluation", uselist=False)
 
     @property
@@ -144,7 +136,7 @@ class HumanQueueModel(Base):
     __tablename__ = "human_queue"
 
     id = Column(String, primary_key=True)
-    ticket_id = Column(String, ForeignKey("tickets.id"), nullable=False, index=True)
+    item_id = Column(String, ForeignKey("eval_items.id"), nullable=False, index=True)
     evaluation_id = Column(String, ForeignKey("evaluations.id"), nullable=False)
     reason = Column(SQLEnum(HumanQueueReason), nullable=False, index=True)
     priority = Column(Integer, default=0)
@@ -191,7 +183,7 @@ class ExperimentResultModel(Base):
 
     id = Column(String, primary_key=True)
     experiment_id = Column(String, ForeignKey("experiments.id"), nullable=False, index=True)
-    ticket_id = Column(String, ForeignKey("tickets.id"), nullable=False)
+    item_id = Column(String, ForeignKey("eval_items.id"), nullable=False)
     eval_a_id = Column(String, ForeignKey("evaluations.id"), nullable=False)
     eval_b_id = Column(String, ForeignKey("evaluations.id"), nullable=False)
     score_diff_json = Column(Text, nullable=False)  # JSON
@@ -236,6 +228,102 @@ class TraceLogModel(Base):
     latency_ms = Column(Float, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class FailurePatternModel(Base):
+    """Failure pattern from pattern analysis."""
+    __tablename__ = "failure_patterns"
+
+    id = Column(String, primary_key=True)
+    analysis_run_id = Column(String, nullable=False, index=True)
+    tags_json = Column(Text, nullable=False)         # JSON list of co-occurring tags
+    frequency = Column(Integer, nullable=False)
+    avg_scores_json = Column(Text, nullable=True)    # JSON {score_type: avg}
+    taxonomy_labels_json = Column(Text, nullable=True)  # JSON {label: count}
+    prompt_version = Column(String, nullable=True, index=True)
+    model_version = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    @property
+    def tags(self) -> List[str]:
+        return json_deserializer(self.tags_json) or []
+
+    @tags.setter
+    def tags(self, value: List[str]):
+        self.tags_json = json_serializer(value)
+
+    @property
+    def avg_scores(self) -> Dict:
+        return json_deserializer(self.avg_scores_json) or {}
+
+    @avg_scores.setter
+    def avg_scores(self, value: Dict):
+        self.avg_scores_json = json_serializer(value)
+
+    @property
+    def taxonomy_labels(self) -> Dict:
+        return json_deserializer(self.taxonomy_labels_json) or {}
+
+    @taxonomy_labels.setter
+    def taxonomy_labels(self, value: Dict):
+        self.taxonomy_labels_json = json_serializer(value)
+
+
+class MultiComparisonResultModel(Base):
+    """Per-item result for a multi-config comparison."""
+    __tablename__ = "multi_comparison_results"
+
+    id = Column(String, primary_key=True)
+    experiment_id = Column(String, ForeignKey("experiments.id"), nullable=False, index=True)
+    item_id = Column(String, ForeignKey("eval_items.id"), nullable=False)
+    config_results_json = Column(Text, nullable=False)  # JSON {config_id: {scores, gates, tags}}
+    rankings_json = Column(Text, nullable=False)        # JSON [{config_id, rank, total_score}]
+    winner_config_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    @property
+    def config_results(self) -> Dict:
+        return json_deserializer(self.config_results_json) or {}
+
+    @config_results.setter
+    def config_results(self, value: Dict):
+        self.config_results_json = json_serializer(value)
+
+    @property
+    def rankings(self) -> List:
+        return json_deserializer(self.rankings_json) or []
+
+    @rankings.setter
+    def rankings(self, value: List):
+        self.rankings_json = json_serializer(value)
+
+
+class PromptProposalModel(Base):
+    """Prompt improvement proposal with state machine."""
+    __tablename__ = "prompt_proposals"
+
+    id = Column(String, primary_key=True)
+    prompt_name = Column(String, nullable=False, index=True)    # "judge_gate", "classify"
+    current_version = Column(String, nullable=True)
+    proposed_prompt = Column(Text, nullable=False)
+    proposed_langfuse_version = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    # pending → testing → approved → deployed
+    # pending → rejected, testing → rejected, approved → rejected
+    test_experiment_id = Column(String, nullable=True)
+    improvement_metrics_json = Column(Text, nullable=True)  # JSON
+    created_by = Column(String, nullable=True, default="auto")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deployed_at = Column(DateTime, nullable=True)
+
+    @property
+    def improvement_metrics(self) -> Dict:
+        return json_deserializer(self.improvement_metrics_json) or {}
+
+    @improvement_metrics.setter
+    def improvement_metrics(self, value: Dict):
+        self.improvement_metrics_json = json_serializer(value)
 
 
 # Database initialization

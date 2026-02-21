@@ -27,5 +27,8 @@ pytest-asyncio>=0.23.0
 pytest-cov>=4.1.0
 httpx>=0.26.0
 
+# Data
+datasets>=2.14.0
+
 # Utilities
 python-dotenv>=1.0.0

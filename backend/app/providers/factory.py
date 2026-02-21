@@ -7,7 +7,8 @@ from .mock import MockProvider
 def get_provider(
     provider_name: str = "mock",
     api_key: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    instrumentation=None,
 ) -> LLMProvider:
     """Get an LLM provider instance."""
 
@@ -18,7 +19,11 @@ def get_provider(
         if not api_key:
             raise ValueError("OpenAI API key required")
         from .openai_provider import OpenAIProvider
-        return OpenAIProvider(api_key=api_key, default_model=model or "gpt-4o-mini")
+        return OpenAIProvider(
+            api_key=api_key,
+            default_model=model or "gpt-4o-mini",
+            instrumentation=instrumentation,
+        )
 
     elif provider_name == "anthropic":
         if not api_key:

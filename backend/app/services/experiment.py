@@ -1,18 +1,17 @@
 """A/B Experiment service."""
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
 import logging
 
 from ..models.schemas import (
-    TicketInDB, ExperimentCreate, ExperimentInDB, ExperimentResult,
+    ExperimentCreate, ExperimentInDB, ExperimentResult,
     ExperimentSummary, ExperimentConfig, HumanQueueReason, DatasetSplit
 )
 from ..core.rubric import SAMPLING_RULES
 from ..db.repository import (
-    TicketRepository, EvaluationRepository, ExperimentRepository,
-    ExperimentResultRepository, HumanQueueRepository, JudgeOutputRepository
+    EvalItemRepository, EvaluationRepository, ExperimentRepository,
+    ExperimentResultRepository, HumanQueueRepository
 )
 from .pipeline import EvaluationPipeline
 from .instrumentation import LangfuseInstrumentation
@@ -43,7 +42,7 @@ class ExperimentService:
         config_a: ExperimentConfig,
         config_b: ExperimentConfig,
         sampling_config: Optional[Dict[str, Any]] = None,
-        ticket_ids: Optional[List[str]] = None
+        item_ids: Optional[List[str]] = None
     ) -> ExperimentInDB:
         """Run an A/B experiment."""
         # Create experiment record
@@ -57,14 +56,14 @@ class ExperimentService:
             sampling_config=sampling_config,
         ))
 
-        # Get tickets
-        ticket_repo = TicketRepository(self.db_session)
-        if ticket_ids:
-            tickets = [t for tid in ticket_ids if (t := ticket_repo.get(tid))]
+        # Get items
+        item_repo = EvalItemRepository(self.db_session)
+        if item_ids:
+            items = [i for iid in item_ids if (i := item_repo.get(iid))]
         else:
-            tickets, _ = ticket_repo.get_all(split=dataset_split, page=1, page_size=1000)
+            items, _ = item_repo.get_all(split=dataset_split, page=1, page_size=1000)
 
-        logger.info(f"Running experiment {experiment.id} on {len(tickets)} tickets")
+        logger.info(f"Running experiment {experiment.id} on {len(items)} items")
 
         # Create trace for experiment
         trace = self.instrumentation.create_trace(
@@ -78,16 +77,16 @@ class ExperimentService:
             ],
         )
 
-        # Process tickets with both configs
+        # Process items with both configs
         result_repo = ExperimentResultRepository(self.db_session)
         queue_repo = HumanQueueRepository(self.db_session)
         results = []
 
-        for ticket in tickets:
+        for item in items:
             try:
                 # Run config A
-                result_a = await self.pipeline_a.process_ticket(
-                    ticket,
+                result_a = await self.pipeline_a.process_item(
+                    item,
                     prompt_version=config_a.prompt_version,
                     model_version=config_a.model_version,
                     docs_version=docs_version,
@@ -95,8 +94,8 @@ class ExperimentService:
                 )
 
                 # Run config B
-                result_b = await self.pipeline_b.process_ticket(
-                    ticket,
+                result_b = await self.pipeline_b.process_item(
+                    item,
                     prompt_version=config_b.prompt_version,
                     model_version=config_b.model_version,
                     docs_version=docs_version,
@@ -104,30 +103,30 @@ class ExperimentService:
                 )
 
                 # Compare results
-                exp_result = self._compare_results(ticket.id, result_a, result_b, sampling_config)
+                exp_result = self._compare_results(item.id, result_a, result_b, sampling_config)
                 result_repo.create(experiment.id, exp_result)
                 results.append(exp_result)
 
                 # Queue ambiguous cases for human review
                 if exp_result.is_ambiguous:
                     queue_repo.create(
-                        ticket_id=ticket.id,
+                        item_id=item.id,
                         evaluation_id=result_a.get("evaluation_id", ""),
                         reason=HumanQueueReason.AB_AMBIGUOUS,
                         priority=50,
                     )
 
             except Exception as e:
-                logger.error(f"Error processing ticket {ticket.id} in experiment: {e}")
+                logger.error(f"Error processing item {item.id} in experiment: {e}")
 
         # Calculate summary
-        summary = self._calculate_summary(experiment.id, results, tickets)
+        summary = self._calculate_summary(experiment.id, results)
 
         # Record in trace
         self.instrumentation.record_span(
             trace,
             "ab_compare",
-            input_data={"ticket_count": len(tickets)},
+            input_data={"item_count": len(items)},
             output_data={
                 "gate_fail_rate_a": summary.gate_fail_rate_a,
                 "gate_fail_rate_b": summary.gate_fail_rate_b,
@@ -144,7 +143,7 @@ class ExperimentService:
 
     def _compare_results(
         self,
-        ticket_id: str,
+        item_id: str,
         result_a: Dict[str, Any],
         result_b: Dict[str, Any],
         sampling_config: Optional[Dict[str, Any]]
@@ -170,16 +169,17 @@ class ExperimentService:
             "gate_b_failed": result_b.get("gate_failed", False),
             "gates_same": result_a.get("gate_failed") == result_b.get("gate_failed"),
         }
+        gate_mismatch = gate_diff["gate_a_failed"] != gate_diff["gate_b_failed"]
 
         # Determine if ambiguous
-        is_ambiguous = (
-            total_diff <= threshold or
-            result_a.get("gate_failed") != result_b.get("gate_failed")
-        )
+        is_ambiguous = (not gate_mismatch) and (total_diff <= threshold)
 
         # Determine winner
         winner = None
-        if not is_ambiguous:
+        if gate_mismatch:
+            # Gate pass always wins over gate fail.
+            winner = "A" if not gate_diff["gate_a_failed"] else "B"
+        elif not is_ambiguous:
             total_a = sum(scores_a.values())
             total_b = sum(scores_b.values())
             gate_a = not result_a.get("gate_failed", False)
@@ -195,7 +195,7 @@ class ExperimentService:
                 winner = "B"
 
         return ExperimentResult(
-            ticket_id=ticket_id,
+            item_id=item_id,
             eval_a_id=result_a.get("evaluation_id", ""),
             eval_b_id=result_b.get("evaluation_id", ""),
             score_diff=score_diff,
@@ -208,24 +208,22 @@ class ExperimentService:
         self,
         experiment_id: str,
         results: List[ExperimentResult],
-        tickets: List[TicketInDB]
     ) -> ExperimentSummary:
         """Calculate experiment summary statistics."""
         eval_repo = EvaluationRepository(self.db_session)
-        judge_repo = JudgeOutputRepository(self.db_session)
 
         total = len(results)
         if total == 0:
             return ExperimentSummary(
                 experiment_id=experiment_id,
-                total_tickets=0,
+                total_items=0,
                 gate_fail_rate_a=0,
                 gate_fail_rate_b=0,
                 top_tag_delta={},
                 avg_scores_a={},
                 avg_scores_b={},
-                actionability_distribution_a={},
-                actionability_distribution_b={},
+                completeness_distribution_a={},
+                completeness_distribution_b={},
                 human_queue_count=0,
                 human_queue_rate=0,
             )
@@ -241,8 +239,8 @@ class ExperimentService:
         scores_b_count = defaultdict(int)
         tags_a = defaultdict(int)
         tags_b = defaultdict(int)
-        actionability_a = defaultdict(int)
-        actionability_b = defaultdict(int)
+        completeness_a = defaultdict(int)
+        completeness_b = defaultdict(int)
 
         for result in results:
             # Get evaluations
@@ -253,8 +251,8 @@ class ExperimentService:
                 for score in eval_a.judge_output.scores:
                     scores_a_sum[score.score_type] += score.score
                     scores_count[score.score_type] += 1
-                    if score.score_type == "actionability":
-                        actionability_a[score.score] += 1
+                    if score.score_type == "completeness":
+                        completeness_a[score.score] += 1
                 for tag in eval_a.judge_output.failure_tags:
                     tags_a[tag] += 1
 
@@ -262,8 +260,8 @@ class ExperimentService:
                 for score in eval_b.judge_output.scores:
                     scores_b_sum[score.score_type] += score.score
                     scores_b_count[score.score_type] += 1
-                    if score.score_type == "actionability":
-                        actionability_b[score.score] += 1
+                    if score.score_type == "completeness":
+                        completeness_b[score.score] += 1
                 for tag in eval_b.judge_output.failure_tags:
                     tags_b[tag] += 1
 
@@ -280,14 +278,14 @@ class ExperimentService:
 
         return ExperimentSummary(
             experiment_id=experiment_id,
-            total_tickets=total,
+            total_items=total,
             gate_fail_rate_a=gate_fails_a / total,
             gate_fail_rate_b=gate_fails_b / total,
             top_tag_delta=top_tag_delta,
             avg_scores_a=avg_scores_a,
             avg_scores_b=avg_scores_b,
-            actionability_distribution_a=dict(actionability_a),
-            actionability_distribution_b=dict(actionability_b),
+            completeness_distribution_a=dict(completeness_a),
+            completeness_distribution_b=dict(completeness_b),
             human_queue_count=human_queue_count,
             human_queue_rate=human_queue_count / total,
         )

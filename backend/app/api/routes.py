@@ -1,4 +1,4 @@
-"""API routes for CS QA Studio."""
+"""API routes for QA Evaluation Studio."""
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -10,16 +10,24 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..models.schemas import (
     IngestRequest, IngestResponse, EvaluateRunRequest, EvaluateRunResponse,
-    ABExperimentRequest, ABExperimentResponse, TicketCreate, TicketInDB,
-    TicketListResponse, EvaluationInDB, HumanReviewCreate, HumanReviewInDB,
-    HumanQueueItem, ReportSummaryResponse, ExperimentInDB, Message, DatasetSplit,
-    DocumentMeta
+    ABExperimentRequest, ABExperimentResponse, EvalItemCreate, EvalItemInDB,
+    EvalItemListResponse, EvaluationInDB, HumanReviewCreate, HumanReviewInDB,
+    HumanQueueItem, ReportSummaryResponse, ExperimentInDB, DatasetSplit,
+    DocumentMeta,
+    # Phase 2: Pattern Analysis
+    PatternAnalysisRequest, PatternAnalysisResult, FailurePattern,
+    # Phase 4: Prompt Suggestions
+    SuggestionGenerateRequest, PromptSuggestion,
+    # Phase 5: Multi-Comparison
+    MultiComparisonRequest, MultiComparisonSummary,
+    # Phase 6: Approval Workflow
+    PromptProposalCreate, PromptProposalInDB, ProposalStatus,
 )
 from ..models.database import init_db
 from ..db.repository import (
-    TicketRepository, EvaluationRepository, JudgeOutputRepository,
+    EvalItemRepository, EvaluationRepository, JudgeOutputRepository,
     HumanQueueRepository, HumanReviewRepository, ExperimentRepository,
-    DocumentRepository
+    DocumentRepository, FailurePatternRepository, ProposalRepository,
 )
 from ..providers import get_provider
 from ..rag.indexer import RAGIndexer
@@ -27,6 +35,10 @@ from ..rag.retriever import RAGRetriever
 from ..services.instrumentation import LangfuseInstrumentation
 from ..services.pipeline import EvaluationPipeline
 from ..services.experiment import ExperimentService
+from ..services.pattern_analyzer import PatternAnalyzer
+from ..services.prompt_suggester import PromptSuggester
+from ..services.multi_compare import MultiCompareService
+from ..services.approval_workflow import ApprovalWorkflow
 
 router = APIRouter()
 settings = get_settings()
@@ -49,7 +61,7 @@ def get_instrumentation(db: Session = Depends(get_db)) -> LangfuseInstrumentatio
     return LangfuseInstrumentation(
         public_key=settings.LANGFUSE_PUBLIC_KEY,
         secret_key=settings.LANGFUSE_SECRET_KEY,
-        host=settings.LANGFUSE_HOST,
+        host=settings.LANGFUSE_BASE_URL,
         db_session=db,
     )
 
@@ -73,6 +85,29 @@ def get_rag_retriever() -> RAGRetriever:
     return _rag_retriever
 
 
+def _resolve_ingest_path(raw_path: str) -> Path:
+    """Resolve and validate ingest path against approved project data roots."""
+    project_root = Path(__file__).resolve().parents[3]
+    allowed_roots = [
+        (project_root / "backend" / "data").resolve(),
+        (project_root / "sample_data").resolve(),
+    ]
+
+    candidate = Path(raw_path).expanduser()
+    candidate = candidate.resolve() if candidate.is_absolute() else (project_root / candidate).resolve()
+
+    if not any(candidate == root or root in candidate.parents for root in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "File path is not allowed. Use files under "
+                "'backend/data' or 'sample_data'."
+            ),
+        )
+
+    return candidate
+
+
 # ==================== INGEST ====================
 
 async def _parse_and_ingest(
@@ -80,58 +115,43 @@ async def _parse_and_ingest(
     split: DatasetSplit,
     db: Session
 ) -> IngestResponse:
-    """Parse JSONL lines and ingest tickets."""
-    ticket_repo = TicketRepository(db)
+    """Parse JSONL lines and ingest eval items."""
+    item_repo = EvalItemRepository(db)
     errors = []
-    tickets_to_create = []
+    items_to_create = []
 
     for i, line in enumerate(data_lines):
         try:
             data = json.loads(line)
 
-            # Convert to ticket format
-            messages = []
-            if "conversation" in data:
-                for msg in data["conversation"]:
-                    messages.append(Message(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content", ""),
-                        timestamp=msg.get("timestamp"),
-                    ))
-            elif "messages" in data:
-                for msg in data["messages"]:
-                    messages.append(Message(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content", ""),
-                    ))
-            elif "query" in data and "response" in data:
-                messages.append(Message(role="user", content=data["query"]))
-                messages.append(Message(role="assistant", content=data["response"]))
+            # OpenOrca format: system_prompt, question, response
+            system_prompt = data.get("system_prompt", data.get("system", ""))
+            question = data.get("question", data.get("instruction", data.get("query", "")))
+            response = data.get("response", data.get("output", data.get("answer", "")))
 
-            candidate_response = data.get("candidate_response", data.get("response", ""))
-
-            if not messages:
-                errors.append(f"Line {i+1}: No conversation found")
+            if not question or not response:
+                errors.append(f"Line {i+1}: Missing question or response field")
                 continue
 
-            ticket = TicketCreate(
+            item = EvalItemCreate(
                 external_id=data.get("id", data.get("external_id")),
-                conversation=messages,
-                candidate_response=candidate_response,
+                system_prompt=system_prompt or None,
+                question=question,
+                response=response,
                 metadata=data.get("metadata"),
                 split=split,
             )
-            tickets_to_create.append(ticket)
+            items_to_create.append(item)
 
         except json.JSONDecodeError as e:
             errors.append(f"Line {i+1}: JSON parse error - {e}")
         except Exception as e:
             errors.append(f"Line {i+1}: {str(e)}")
 
-    # Batch insert all tickets in a single transaction
+    # Batch insert all items in a single transaction
     ingested = 0
-    if tickets_to_create:
-        ingested = ticket_repo.create_batch(tickets_to_create)
+    if items_to_create:
+        ingested = item_repo.create_batch(items_to_create)
 
     return IngestResponse(
         ingested_count=ingested,
@@ -145,8 +165,8 @@ async def ingest_batch(
     request: IngestRequest,
     db: Session = Depends(get_db)
 ):
-    """Ingest batch of tickets from server file path."""
-    file_path = Path(request.file_path)
+    """Ingest batch of eval items from server file path."""
+    file_path = _resolve_ingest_path(request.file_path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
 
@@ -165,7 +185,7 @@ async def ingest_upload(
     split: DatasetSplit = Form(DatasetSplit.DEV),
     db: Session = Depends(get_db)
 ):
-    """Ingest batch of tickets from file upload."""
+    """Ingest batch of eval items from file upload."""
     content = await file.read()
     content_str = content.decode("utf-8")
 
@@ -192,15 +212,16 @@ async def evaluate_run(
     db: Session = Depends(get_db),
     instrumentation: LangfuseInstrumentation = Depends(get_instrumentation)
 ):
-    """Run evaluation on tickets."""
-    ticket_repo = TicketRepository(db)
+    """Run evaluation on items."""
+    item_repo = EvalItemRepository(db)
     retriever = get_rag_retriever()
 
     # Get provider
     provider = get_provider(
         settings.LLM_PROVIDER,
         api_key=settings.OPENAI_API_KEY,
-        model=settings.LLM_MODEL,
+        model=request.model_version or settings.LLM_MODEL,
+        instrumentation=instrumentation,
     )
 
     # Create pipeline
@@ -211,17 +232,18 @@ async def evaluate_run(
         db_session=db,
     )
 
-    # Get tickets
-    if request.ticket_ids:
-        tickets = [t for tid in request.ticket_ids if (t := ticket_repo.get(tid))]
+    # Get items
+    if request.item_ids:
+        items = [i for iid in request.item_ids if (i := item_repo.get(iid))]
     else:
-        tickets, _ = ticket_repo.get_all(split=request.dataset_split, page=1, page_size=1000)
+        page_size = request.limit or 1000
+        items, _ = item_repo.get_all(split=request.dataset_split, page=1, page_size=page_size)
 
-    # Process tickets
+    # Process items
     results = []
-    for ticket in tickets:
-        result = await pipeline.process_ticket(
-            ticket,
+    for item in items:
+        result = await pipeline.process_item(
+            item,
             prompt_version=request.prompt_version,
             model_version=request.model_version,
             docs_version=request.docs_version,
@@ -245,6 +267,9 @@ async def evaluate_run(
             score_counts[score_type] += 1
 
     avg_scores = {k: score_sums[k] / score_counts[k] for k in score_sums if score_counts[k] > 0}
+
+    # Flush Langfuse traces
+    instrumentation.flush()
 
     return EvaluateRunResponse(
         processed_count=len(results),
@@ -271,11 +296,13 @@ async def run_ab_experiment(
         settings.LLM_PROVIDER,
         api_key=settings.OPENAI_API_KEY,
         model=request.config_a.model_version,
+        instrumentation=instrumentation,
     )
     provider_b = get_provider(
         settings.LLM_PROVIDER,
         api_key=settings.OPENAI_API_KEY,
         model=request.config_b.model_version,
+        instrumentation=instrumentation,
     )
 
     # Create pipelines
@@ -317,42 +344,42 @@ async def run_ab_experiment(
     )
 
 
-# ==================== TICKETS ====================
+# ==================== ITEMS ====================
 
-@router.get("/tickets", response_model=TicketListResponse)
-async def list_tickets(
+@router.get("/items", response_model=EvalItemListResponse)
+async def list_items(
     split: Optional[DatasetSplit] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
-    """List tickets with pagination."""
-    repo = TicketRepository(db)
-    tickets, total = repo.get_all(split=split, page=page, page_size=page_size)
+    """List eval items with pagination."""
+    repo = EvalItemRepository(db)
+    items, total = repo.get_all(split=split, page=page, page_size=page_size)
 
-    return TicketListResponse(
-        tickets=tickets,
+    return EvalItemListResponse(
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
     )
 
 
-@router.get("/tickets/{ticket_id}")
-async def get_ticket(
-    ticket_id: str,
+@router.get("/items/{item_id}")
+async def get_item(
+    item_id: str,
     db: Session = Depends(get_db)
 ):
-    """Get ticket by ID with evaluations."""
-    ticket_repo = TicketRepository(db)
+    """Get eval item by ID with evaluations."""
+    item_repo = EvalItemRepository(db)
     eval_repo = EvaluationRepository(db)
     judge_repo = JudgeOutputRepository(db)
 
-    ticket = ticket_repo.get(ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    item = item_repo.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
 
-    evaluations = eval_repo.get_by_ticket(ticket_id)
+    evaluations = eval_repo.get_by_item(item_id)
 
     # Enrich evaluations with judge outputs
     enriched_evals = []
@@ -364,7 +391,7 @@ async def get_ticket(
         })
 
     return {
-        "ticket": ticket.model_dump(),
+        "item": item.model_dump(),
         "evaluations": enriched_evals,
     }
 
@@ -373,7 +400,7 @@ async def get_ticket(
 
 @router.get("/evaluations")
 async def list_evaluations(
-    ticket_id: Optional[str] = None,
+    item_id: Optional[str] = None,
     prompt_version: Optional[str] = None,
     model_version: Optional[str] = None,
     docs_version: Optional[str] = None,
@@ -382,12 +409,12 @@ async def list_evaluations(
     """List evaluations with optional filters."""
     repo = EvaluationRepository(db)
 
-    if ticket_id:
-        evaluations = repo.get_by_ticket(ticket_id)
+    if item_id:
+        evaluations = repo.get_by_item(item_id)
     elif prompt_version and model_version:
         evaluations = repo.get_by_version(prompt_version, model_version, docs_version or "v1")
     else:
-        raise HTTPException(status_code=400, detail="Provide ticket_id or version filters")
+        raise HTTPException(status_code=400, detail="Provide item_id or version filters")
 
     return {"evaluations": [e.model_dump() for e in evaluations]}
 
@@ -413,11 +440,22 @@ async def submit_human_review(
     review_repo = HumanReviewRepository(db)
     queue_repo = HumanQueueRepository(db)
 
-    # Mark queue item as reviewed
-    queue_repo.mark_reviewed(review.queue_item_id)
+    try:
+        # Keep queue and review updates in a single transaction.
+        marked = queue_repo.mark_reviewed(review.queue_item_id, commit=False)
+        if not marked:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Queue item not found")
 
-    # Create review
-    return review_repo.create(review)
+        created_review = review_repo.create(review, commit=False)
+        db.commit()
+        return created_review
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to submit human review: {e}")
 
 
 # ==================== REPORTS ====================
@@ -433,10 +471,10 @@ async def get_report_summary(
     eval_repo = EvaluationRepository(db)
     judge_repo = JudgeOutputRepository(db)
     queue_repo = HumanQueueRepository(db)
-    ticket_repo = TicketRepository(db)
+    item_repo = EvalItemRepository(db)
 
-    # Get tickets in split
-    tickets, total = ticket_repo.get_all(split=dataset_split, page=1, page_size=10000)
+    # Get items in split
+    items, total = item_repo.get_all(split=dataset_split, page=1, page_size=10000)
 
     # Collect stats
     total_evals = 0
@@ -445,8 +483,8 @@ async def get_report_summary(
     score_counts = defaultdict(int)
     tag_counts = defaultdict(int)
 
-    for ticket in tickets:
-        evals = eval_repo.get_by_ticket(ticket.id)
+    for item in items:
+        evals = eval_repo.get_by_item(item.id)
         for eval in evals:
             total_evals += 1
             judge = judge_repo.get_by_evaluation(eval.id)
@@ -564,3 +602,243 @@ async def health_check():
         "langfuse_enabled": bool(settings.LANGFUSE_PUBLIC_KEY),
         "llm_provider": settings.LLM_PROVIDER,
     }
+
+
+# ==================== PROMPTS (Phase 1) ====================
+
+@router.get("/prompts")
+async def list_prompts(
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """List all prompts from Langfuse registry."""
+    prompts = instrumentation.list_prompts()
+    return {"prompts": prompts}
+
+
+@router.post("/prompts")
+async def create_prompt(
+    name: str = Body(...),
+    prompt: str = Body(...),
+    labels: Optional[List[str]] = Body(None),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Register a prompt in Langfuse."""
+    result = instrumentation.create_prompt(name=name, prompt=prompt, labels=labels)
+    if result is None:
+        raise HTTPException(status_code=503, detail="Langfuse not configured or unavailable")
+    return result
+
+
+@router.post("/prompts/{name}/label")
+async def update_prompt_label(
+    name: str,
+    version: int = Body(...),
+    new_label: str = Body(...),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Update a prompt version label (e.g., promote to 'production')."""
+    success = instrumentation.update_prompt_label(name=name, version=version, new_label=new_label)
+    if not success:
+        raise HTTPException(status_code=503, detail="Langfuse not configured or update failed")
+    return {"success": True, "name": name, "version": version, "label": new_label}
+
+
+# ==================== PATTERN ANALYSIS (Phase 2) ====================
+
+@router.post("/analysis/patterns", response_model=PatternAnalysisResult)
+async def run_pattern_analysis(
+    request: PatternAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    """Run failure pattern analysis across stored evaluations."""
+    analyzer = PatternAnalyzer(db_session=db)
+    return await analyzer.analyze(
+        prompt_version=request.prompt_version,
+        model_version=request.model_version,
+        min_frequency=request.min_frequency,
+        top_k=request.top_k,
+    )
+
+
+@router.get("/analysis/patterns/latest", response_model=List[FailurePattern])
+async def get_latest_patterns(
+    top_k: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """Get patterns from the most recent analysis run."""
+    repo = FailurePatternRepository(db)
+    return repo.get_latest(top_k=top_k)
+
+
+# ==================== SUGGESTIONS (Phase 4) ====================
+
+@router.post("/suggestions/generate", response_model=List[PromptSuggestion])
+async def generate_suggestions(
+    request: SuggestionGenerateRequest,
+    db: Session = Depends(get_db),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Generate prompt improvement suggestions from failure patterns."""
+    provider = get_provider(
+        settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        model=settings.LLM_MODEL,
+        instrumentation=instrumentation,
+    )
+    suggester = PromptSuggester(
+        provider=provider,
+        db_session=db,
+        instrumentation=instrumentation,
+    )
+    return await suggester.generate_suggestions(request)
+
+
+@router.get("/suggestions/latest", response_model=List[PromptSuggestion])
+async def get_latest_suggestions(
+    top_k: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Get the most recently generated prompt suggestions."""
+    provider = get_provider(
+        settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        model=settings.LLM_MODEL,
+        instrumentation=instrumentation,
+    )
+    suggester = PromptSuggester(
+        provider=provider,
+        db_session=db,
+        instrumentation=instrumentation,
+    )
+    return suggester.get_latest_suggestions(top_k=top_k)
+
+
+# ==================== MULTI-COMPARISON (Phase 5) ====================
+
+@router.post("/experiment/multi", response_model=MultiComparisonSummary)
+async def run_multi_comparison(
+    request: MultiComparisonRequest,
+    db: Session = Depends(get_db),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Run N-way config comparison across a dataset split."""
+    retriever = get_rag_retriever()
+
+    def provider_factory(prompt_version: str, model_version: str):
+        return get_provider(
+            settings.LLM_PROVIDER,
+            api_key=settings.OPENAI_API_KEY,
+            model=model_version if model_version != "mock" else settings.LLM_MODEL,
+            instrumentation=instrumentation,
+        )
+
+    service = MultiCompareService(db_session=db, instrumentation=instrumentation)
+    return await service.run_comparison(
+        request=request,
+        provider_factory=provider_factory,
+        retriever=retriever,
+    )
+
+
+@router.get("/experiment/multi/{experiment_id}/results")
+async def get_multi_comparison_results(
+    experiment_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get per-item results for a multi-comparison experiment."""
+    from ..db.repository import MultiComparisonRepository
+    repo = MultiComparisonRepository(db)
+    results = repo.get_by_experiment(experiment_id)
+    return {"experiment_id": experiment_id, "results": results}
+
+
+# ==================== APPROVAL WORKFLOW (Phase 6) ====================
+
+@router.get("/proposals", response_model=List[PromptProposalInDB])
+async def list_proposals(
+    status: Optional[ProposalStatus] = None,
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """List prompt proposals, optionally filtered by status."""
+    workflow = ApprovalWorkflow(db_session=db)
+    return workflow.list_proposals(status=status, limit=limit)
+
+
+@router.post("/proposals", response_model=PromptProposalInDB)
+async def create_proposal(
+    data: PromptProposalCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a new prompt proposal (starts in PENDING state)."""
+    workflow = ApprovalWorkflow(db_session=db)
+    return workflow.create_proposal(data)
+
+
+@router.get("/proposals/{proposal_id}", response_model=PromptProposalInDB)
+async def get_proposal(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get a proposal by ID."""
+    workflow = ApprovalWorkflow(db_session=db)
+    proposal = workflow.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return proposal
+
+
+@router.post("/proposals/{proposal_id}/test", response_model=PromptProposalInDB)
+async def start_proposal_test(
+    proposal_id: str,
+    experiment_id: str = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    """Start A/B test for a proposal (PENDING → TESTING)."""
+    workflow = ApprovalWorkflow(db_session=db)
+    try:
+        return workflow.start_test(proposal_id, experiment_id=experiment_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/proposals/{proposal_id}/approve", response_model=PromptProposalInDB)
+async def approve_proposal(
+    proposal_id: str,
+    improvement_metrics: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """Approve a proposal (TESTING → APPROVED)."""
+    workflow = ApprovalWorkflow(db_session=db)
+    try:
+        return workflow.approve(proposal_id, improvement_metrics=improvement_metrics)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/proposals/{proposal_id}/reject", response_model=PromptProposalInDB)
+async def reject_proposal(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+):
+    """Reject a proposal (any state → REJECTED)."""
+    workflow = ApprovalWorkflow(db_session=db)
+    try:
+        return workflow.reject(proposal_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/proposals/{proposal_id}/deploy", response_model=PromptProposalInDB)
+async def deploy_proposal(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Deploy an approved proposal to Langfuse production label (APPROVED → DEPLOYED)."""
+    workflow = ApprovalWorkflow(db_session=db, instrumentation=instrumentation)
+    try:
+        return workflow.deploy(proposal_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -1,73 +1,73 @@
-"""Domain taxonomy definitions for SaaS collaboration tools."""
+"""Domain taxonomy definitions for Q/A evaluation tasks."""
 from enum import Enum
 from typing import Dict, List
 
 
 class TaxonomyLabel(str, Enum):
-    """Classification labels for customer service tickets."""
-    BILLING_SEATS = "billing_seats"
-    BILLING_REFUND = "billing_refund"
-    WORKSPACE_ACCESS = "workspace_access"
-    PERMISSION_SHARING = "permission_sharing"
-    LOGIN_SSO = "login_sso"
-    IMPORT_EXPORT_SYNC = "import_export_sync"
-    BUG_REPORT = "bug_report"
-    FEATURE_REQUEST = "feature_request"
+    """Classification labels for Q/A evaluation items."""
+    REASONING = "reasoning"
+    MATH = "math"
+    CLASSIFICATION = "classification"
+    SUMMARIZATION = "summarization"
+    EXTRACTION = "extraction"
+    CREATIVE_WRITING = "creative_writing"
+    CODING = "coding"
+    OPEN_QA = "open_qa"
 
 
 class FailureTag(str, Enum):
     """Failure tags for evaluation."""
-    INTENT_MISS = "intent_miss"
-    MISSING_SLOT = "missing_slot"
-    NO_NEXT_STEP = "no_next_step"
-    POLICY_PII = "policy_pii"
-    OVERCLAIM = "overclaim"
-    ESCALATION_NEEDED = "escalation_needed"
-    TOOL_NEEDED = "tool_needed"
-    TONE_ISSUE = "tone_issue"
-    CONTRADICTION = "contradiction"
-    SSO_ADMIN_REQUIRED = "sso_admin_required"
-    PERMISSION_MODEL_MISMATCH = "permission_model_mismatch"
-    BILLING_CONTEXT_MISSING = "billing_context_missing"
+    INSTRUCTION_MISS = "instruction_miss"
+    INCOMPLETE_ANSWER = "incomplete_answer"
+    HALLUCINATION = "hallucination"
+    LOGIC_ERROR = "logic_error"
+    FORMAT_VIOLATION = "format_violation"
+    OVER_VERBOSE = "over_verbose"
+    UNDER_VERBOSE = "under_verbose"
+    WRONG_LANGUAGE = "wrong_language"
+    UNSAFE_CONTENT = "unsafe_content"
+    CITATION_MISSING = "citation_missing"
+    OFF_TOPIC = "off_topic"
+    PARTIAL_ANSWER = "partial_answer"
 
 
 # Required slots per taxonomy label
 REQUIRED_SLOTS: Dict[TaxonomyLabel, List[str]] = {
-    TaxonomyLabel.BILLING_SEATS: [
-        "current_plan", "seat_count", "billing_cycle", "receipt_available"
+    TaxonomyLabel.REASONING: [
+        "premise_identified", "conclusion_stated", "reasoning_chain", "assumptions_noted",
     ],
-    TaxonomyLabel.BILLING_REFUND: [
-        "plan_type", "billing_date", "refund_amount", "payment_method"
+    TaxonomyLabel.MATH: [
+        "problem_restated", "formula_used", "steps_shown", "final_answer",
     ],
-    TaxonomyLabel.WORKSPACE_ACCESS: [
-        "workspace_id", "user_role", "access_type", "error_message"
+    TaxonomyLabel.CLASSIFICATION: [
+        "categories_listed", "chosen_category", "justification", "confidence_expressed",
     ],
-    TaxonomyLabel.PERMISSION_SHARING: [
-        "resource_type", "current_permission", "target_permission", "user_count"
+    TaxonomyLabel.SUMMARIZATION: [
+        "key_points", "length_appropriate", "no_new_info", "coherent_structure",
     ],
-    TaxonomyLabel.LOGIN_SSO: [
-        "idp_provider", "error_code", "is_admin", "domain_verified"
+    TaxonomyLabel.EXTRACTION: [
+        "target_field_identified", "value_extracted", "source_referenced", "format_correct",
     ],
-    TaxonomyLabel.IMPORT_EXPORT_SYNC: [
-        "source_format", "target_format", "data_size", "sync_direction"
+    TaxonomyLabel.CREATIVE_WRITING: [
+        "genre_respected", "prompt_elements_used", "tone_consistent", "narrative_structure",
     ],
-    TaxonomyLabel.BUG_REPORT: [
-        "browser_os", "reproduction_steps", "frequency", "error_screenshot"
+    TaxonomyLabel.CODING: [
+        "language_correct", "logic_sound", "edge_cases", "code_runnable",
     ],
-    TaxonomyLabel.FEATURE_REQUEST: [
-        "feature_category", "use_case", "priority_indication", "alternatives_tried"
+    TaxonomyLabel.OPEN_QA: [
+        "question_addressed", "factual_accuracy", "source_cited", "completeness",
     ],
 }
 
 
 # Label descriptions for prompts
 LABEL_DESCRIPTIONS: Dict[TaxonomyLabel, str] = {
-    TaxonomyLabel.BILLING_SEATS: "Issues related to seat-based pricing, adding/removing seats, or seat allocation",
-    TaxonomyLabel.BILLING_REFUND: "Refund requests, billing disputes, or payment reversal inquiries",
-    TaxonomyLabel.WORKSPACE_ACCESS: "Problems accessing workspaces, workspace invitations, or workspace visibility",
-    TaxonomyLabel.PERMISSION_SHARING: "Permission settings, sharing controls, or access level modifications",
-    TaxonomyLabel.LOGIN_SSO: "Login issues, SSO configuration, SAML/OAuth problems, or authentication errors",
-    TaxonomyLabel.IMPORT_EXPORT_SYNC: "Data import/export, third-party sync, or data migration issues",
-    TaxonomyLabel.BUG_REPORT: "Technical bugs, unexpected behavior, or system errors",
-    TaxonomyLabel.FEATURE_REQUEST: "Feature suggestions, enhancement requests, or capability inquiries",
+    TaxonomyLabel.REASONING: "Tasks requiring logical reasoning, inference, or multi-step deduction",
+    TaxonomyLabel.MATH: "Mathematical problems including arithmetic, algebra, word problems, and proofs",
+    TaxonomyLabel.CLASSIFICATION: "Tasks asking to categorize, label, or sort items into groups",
+    TaxonomyLabel.SUMMARIZATION: "Tasks requiring condensing longer text into a shorter summary",
+    TaxonomyLabel.EXTRACTION: "Tasks requiring extracting specific information from provided text",
+    TaxonomyLabel.CREATIVE_WRITING: "Tasks involving story writing, poetry, dialogue, or creative composition",
+    TaxonomyLabel.CODING: "Programming tasks including code generation, debugging, or explanation",
+    TaxonomyLabel.OPEN_QA: "General knowledge questions or open-ended factual queries",
 }

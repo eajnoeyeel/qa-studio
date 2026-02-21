@@ -19,7 +19,13 @@ class DocumentLoader:
         """Load all markdown documents with metadata."""
         documents = []
 
-        for category in ["policies", "help_center"]:
+        # Prefer rubric docs for the current generic Q/A evaluation domain.
+        # Fall back to legacy CS corpora only when rubric docs are absent.
+        categories = ["rubrics"]
+        if not (self.docs_path / "rubrics").exists():
+            categories = ["policies", "help_center", "rubrics"]
+
+        for category in categories:
             category_path = self.docs_path / category
             if not category_path.exists():
                 continue

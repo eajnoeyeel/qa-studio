@@ -21,50 +21,36 @@ class HumanQueueReason(str, Enum):
     MANUAL = "manual"
 
 
-# ============== Message/Conversation ==============
+# ============== EvalItem ==============
 
-class Message(BaseModel):
-    """Single message in a conversation."""
-    role: str = Field(..., description="user or assistant")
-    content: str
-    timestamp: Optional[datetime] = None
-
-
-class Conversation(BaseModel):
-    """Conversation thread."""
-    messages: List[Message]
-
-
-# ============== Ticket ==============
-
-class TicketBase(BaseModel):
-    """Base ticket schema."""
+class EvalItemBase(BaseModel):
+    """Base eval item schema."""
     external_id: Optional[str] = None
-    conversation: List[Message]
-    candidate_response: str = Field(..., description="LLM response to evaluate")
+    system_prompt: Optional[str] = None
+    question: str = Field(..., description="The question or instruction")
+    response: str = Field(..., description="The response to evaluate")
     metadata: Optional[Dict[str, Any]] = None
 
 
-class TicketCreate(TicketBase):
-    """Schema for creating a ticket."""
+class EvalItemCreate(EvalItemBase):
+    """Schema for creating an eval item."""
     split: DatasetSplit = DatasetSplit.DEV
 
 
-class TicketInDB(TicketBase):
-    """Schema for ticket stored in DB."""
+class EvalItemInDB(EvalItemBase):
+    """Schema for eval item stored in DB."""
     id: str
     split: DatasetSplit
     created_at: datetime
-    normalized_text: Optional[str] = None
     masked_text: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 
-class TicketListResponse(BaseModel):
-    """Response for ticket list."""
-    tickets: List[TicketInDB]
+class EvalItemListResponse(BaseModel):
+    """Response for eval item list."""
+    items: List[EvalItemInDB]
     total: int
     page: int
     page_size: int
@@ -151,7 +137,7 @@ class JudgeOutputInDB(JudgeOutput):
 
 class EvaluationCreate(BaseModel):
     """Schema for creating an evaluation."""
-    ticket_id: str
+    item_id: str
     prompt_version: str
     model_version: str
     docs_version: str
@@ -160,7 +146,7 @@ class EvaluationCreate(BaseModel):
 class EvaluationInDB(BaseModel):
     """Evaluation stored in DB."""
     id: str
-    ticket_id: str
+    item_id: str
     prompt_version: str
     model_version: str
     docs_version: str
@@ -178,7 +164,7 @@ class EvaluationInDB(BaseModel):
 class HumanQueueItem(BaseModel):
     """Item in human review queue."""
     id: str
-    ticket_id: str
+    item_id: str
     evaluation_id: str
     reason: HumanQueueReason
     priority: int = 0
@@ -226,8 +212,8 @@ class ExperimentCreate(BaseModel):
 
 
 class ExperimentResult(BaseModel):
-    """Single experiment result for a ticket."""
-    ticket_id: str
+    """Single experiment result for an item."""
+    item_id: str
     eval_a_id: str
     eval_b_id: str
     score_diff: Dict[str, int]  # score_type -> (a - b)
@@ -239,14 +225,14 @@ class ExperimentResult(BaseModel):
 class ExperimentSummary(BaseModel):
     """Experiment summary statistics."""
     experiment_id: str
-    total_tickets: int
+    total_items: int
     gate_fail_rate_a: float
     gate_fail_rate_b: float
     top_tag_delta: Dict[str, int]  # tag -> (count_a - count_b)
     avg_scores_a: Dict[str, float]
     avg_scores_b: Dict[str, float]
-    actionability_distribution_a: Dict[int, int]
-    actionability_distribution_b: Dict[int, int]
+    completeness_distribution_a: Dict[int, int]
+    completeness_distribution_b: Dict[int, int]
     human_queue_count: int
     human_queue_rate: float
 
@@ -289,7 +275,8 @@ class EvaluateRunRequest(BaseModel):
     model_version: str
     docs_version: str
     sampling_config: Optional[Dict[str, Any]] = None
-    ticket_ids: Optional[List[str]] = None  # If None, process all in split
+    item_ids: Optional[List[str]] = None  # If None, process all in split
+    limit: Optional[int] = Field(None, ge=1, le=5000, description="Max items to process")
 
 
 class EvaluateRunResponse(BaseModel):
@@ -337,13 +324,146 @@ class DocumentMeta(BaseModel):
     source_url: Optional[str] = None
     version: str
     tags: List[str]
-    category: str  # policies, help_center
+    category: str  # policies, help_center, rubrics
 
 
 class DocumentInDB(DocumentMeta):
     """Document stored in DB."""
     content: str
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============== Pattern Analysis ==============
+
+class FailurePattern(BaseModel):
+    """A detected failure pattern (co-occurring tags)."""
+    id: str
+    analysis_run_id: str
+    tags: List[str]
+    frequency: int
+    avg_scores: Dict[str, float] = {}
+    taxonomy_labels: Dict[str, int] = {}  # label -> count
+    prompt_version: Optional[str] = None
+    model_version: Optional[str] = None
+    created_at: datetime
+
+
+class PatternAnalysisResult(BaseModel):
+    """Result of a pattern analysis run."""
+    analysis_run_id: str
+    patterns_found: int
+    top_patterns: List[FailurePattern]
+    total_evaluations_analyzed: int
+    prompt_version: Optional[str] = None
+    model_version: Optional[str] = None
+
+
+class PatternAnalysisRequest(BaseModel):
+    """Request to run pattern analysis."""
+    prompt_version: Optional[str] = None
+    model_version: Optional[str] = None
+    min_frequency: int = Field(default=2, ge=1)
+    top_k: int = Field(default=10, ge=1, le=50)
+
+
+# ============== Prompt Suggestions ==============
+
+class PromptSuggestion(BaseModel):
+    """A suggested prompt improvement."""
+    id: str
+    prompt_name: str
+    current_prompt_summary: str
+    suggested_prompt: str
+    rationale: str
+    target_patterns: List[str]  # Pattern IDs this targets
+    expected_improvement: str
+    created_at: datetime
+
+
+class SuggestionGenerateRequest(BaseModel):
+    """Request to generate prompt suggestions."""
+    prompt_name: str = "judge_gate"
+    top_k_patterns: int = Field(default=5, ge=1, le=20)
+    register_in_langfuse: bool = False
+
+
+# ============== Multi-Comparison ==============
+
+class MultiExperimentConfig(BaseModel):
+    """Single config in a multi-comparison."""
+    config_id: str
+    prompt_version: str
+    model_version: str
+    label: Optional[str] = None  # Human-readable label
+
+
+class MultiComparisonRequest(BaseModel):
+    """Request to run N-way comparison."""
+    name: str
+    dataset_split: DatasetSplit
+    docs_version: str
+    configs: List[MultiExperimentConfig] = Field(..., min_length=2)
+    item_ids: Optional[List[str]] = None
+    limit: Optional[int] = Field(None, ge=1, le=1000)
+
+
+class ConfigRanking(BaseModel):
+    """Ranking of one config in a multi-comparison."""
+    config_id: str
+    label: Optional[str] = None
+    rank: int
+    total_score: float
+    avg_scores: Dict[str, float]
+    gate_fail_rate: float
+    win_count: int
+    win_rate: float
+
+
+class MultiComparisonSummary(BaseModel):
+    """Summary of a multi-comparison experiment."""
+    experiment_id: str
+    experiment_name: str
+    total_items: int
+    config_rankings: List[ConfigRanking]
+    winner_config_id: str
+    created_at: datetime
+
+
+# ============== Approval Workflow ==============
+
+class ProposalStatus(str, Enum):
+    PENDING = "pending"
+    TESTING = "testing"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    DEPLOYED = "deployed"
+
+
+class PromptProposalCreate(BaseModel):
+    """Schema for creating a prompt proposal."""
+    prompt_name: str
+    current_version: Optional[str] = None
+    proposed_prompt: str
+    created_by: str = "auto"
+
+
+class PromptProposalInDB(BaseModel):
+    """Prompt proposal stored in DB."""
+    id: str
+    prompt_name: str
+    current_version: Optional[str] = None
+    proposed_prompt: str
+    proposed_langfuse_version: Optional[str] = None
+    status: ProposalStatus
+    test_experiment_id: Optional[str] = None
+    improvement_metrics: Dict[str, Any] = {}
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    deployed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

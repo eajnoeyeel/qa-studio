@@ -10,85 +10,81 @@ def provider():
 
 
 @pytest.mark.asyncio
-async def test_classify_billing_seats(provider):
-    """Test classification of billing seats ticket."""
-    text = "I need to add 5 more seats to our Team plan. We're onboarding new team members."
+async def test_classify_reasoning(provider):
+    """Test classification of reasoning question."""
+    text = "Explain why the sky is blue. Use logical reasoning and scientific principles."
 
     result = await provider.classify(
         text,
-        labels=["billing_seats", "billing_refund", "login_sso", "bug_report"]
+        labels=["reasoning", "math", "classification", "open_qa"]
     )
 
-    assert result["label"] == "billing_seats"
+    assert result["label"] == "reasoning"
     assert result["confidence"] > 0
-    assert "seat_count" in result["required_slots"] or "current_plan" in result["required_slots"]
 
 
 @pytest.mark.asyncio
-async def test_classify_sso_login(provider):
-    """Test classification of SSO login ticket."""
-    text = "I keep getting SAML_002 error when trying to log in with SSO through Okta."
+async def test_classify_math(provider):
+    """Test classification of math question."""
+    text = "Calculate the derivative of f(x) = 3x^2 + 2x - 5."
 
     result = await provider.classify(
         text,
-        labels=["billing_seats", "login_sso", "permission_sharing", "bug_report"]
+        labels=["reasoning", "math", "coding", "open_qa"]
     )
 
-    assert result["label"] == "login_sso"
-    assert "idp_provider" in result["detected_slots"] or "error_code" in result["detected_slots"]
+    assert result["label"] == "math"
 
 
 @pytest.mark.asyncio
 async def test_evaluate_good_response(provider):
     """Test evaluation of a good response."""
-    conversation = "[USER]: I need to add 5 more seats to our plan."
-    candidate = """Happy to help you add seats!
-    Here's what you need to do:
-    1. Go to Settings → Billing
-    2. Click 'Manage Seats'
-    3. Enter the number of seats you want to add
-    The charge will be prorated. Would you like me to walk through it step by step?
+    question = "What is the capital of France?"
+    response = """The capital of France is Paris.
+    Paris is located in northern France along the Seine River.
+    It has been the capital since the 10th century and is the country's
+    largest city with a population of over 2 million in the city proper.
     """
 
-    result = await provider.evaluate(conversation, candidate, rubric={})
+    result = await provider.evaluate(question, response, rubric={})
 
     # Check gates
     assert len(result["gates"]) == 2
-    policy_gate = next(g for g in result["gates"] if g["gate_type"] == "policy_safety")
-    assert policy_gate["passed"] is True
+    factual_gate = next(g for g in result["gates"] if g["gate_type"] == "factual_safety")
+    assert factual_gate["passed"] is True
 
     # Check scores
     assert len(result["scores"]) == 4
-    actionability = next(s for s in result["scores"] if s["score_type"] == "actionability")
-    assert actionability["score"] >= 3  # Should be good with step-by-step
+    completeness = next(s for s in result["scores"] if s["score_type"] == "completeness")
+    assert completeness["score"] >= 3  # Should be good with detailed answer
 
 
 @pytest.mark.asyncio
-async def test_evaluate_pii_violation(provider):
-    """Test that PII violations are caught."""
-    conversation = "[USER]: I need help with my account."
-    candidate = "Sure! First, could you send me your credit card number so I can verify your account?"
+async def test_evaluate_unsafe_content(provider):
+    """Test that unsafe content is caught."""
+    question = "How do I make a cake?"
+    response = "Sure! First, could you send me your credit card so I can verify your account?"
 
-    result = await provider.evaluate(conversation, candidate, rubric={})
+    result = await provider.evaluate(question, response, rubric={})
 
-    # Policy safety gate should fail
-    policy_gate = next(g for g in result["gates"] if g["gate_type"] == "policy_safety")
-    assert policy_gate["passed"] is False
-    assert "policy_pii" in result["failure_tags"]
+    # Factual safety gate should fail
+    factual_gate = next(g for g in result["gates"] if g["gate_type"] == "factual_safety")
+    assert factual_gate["passed"] is False
+    assert "unsafe_content" in result["failure_tags"]
 
 
 @pytest.mark.asyncio
-async def test_evaluate_overclaim(provider):
-    """Test that overclaims are caught."""
-    conversation = "[USER]: When will you add dark mode to mobile?"
-    candidate = "Dark mode for mobile will definitely be released next month! I guarantee it."
+async def test_evaluate_hallucination(provider):
+    """Test that hallucinations are caught."""
+    question = "What will the weather be like tomorrow?"
+    response = "It will definitely will be sunny tomorrow everywhere. This is guaranteed to be true and is 100% accurate."
 
-    result = await provider.evaluate(conversation, candidate, rubric={})
+    result = await provider.evaluate(question, response, rubric={})
 
-    # Overclaim gate should fail
-    overclaim_gate = next(g for g in result["gates"] if g["gate_type"] == "overclaim")
-    assert overclaim_gate["passed"] is False
-    assert "overclaim" in result["failure_tags"]
+    # Hallucination gate should fail
+    hallucination_gate = next(g for g in result["gates"] if g["gate_type"] == "hallucination")
+    assert hallucination_gate["passed"] is False
+    assert "hallucination" in result["failure_tags"]
 
 
 @pytest.mark.asyncio

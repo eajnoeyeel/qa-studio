@@ -9,7 +9,7 @@ settings = get_settings()
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="SaaS CS QA Studio - Automated Customer Service Quality Assessment",
+    description="QA Studio - Automated Q/A Response Quality Assessment",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",

@@ -195,16 +195,22 @@ class RAGRetriever:
 
     def get_context_for_evaluation(
         self,
-        conversation: str,
-        candidate_response: str,
+        question: str,
+        response: str,
         taxonomy_label: Optional[str] = None,
+        docs_version: Optional[str] = None,
         top_k: int = 5
     ) -> RAGResult:
         """Get relevant context for evaluating a response."""
-        # Combine conversation and response for query
-        query = f"{conversation}\n\nCandidate response: {candidate_response}"
+        # Combine question and response for query
+        query = f"{question}\n\nResponse: {response}"
 
         # Filter by taxonomy label if provided
         filter_tags = [taxonomy_label] if taxonomy_label else None
 
-        return self.retrieve(query, top_k=top_k, filter_tags=filter_tags)
+        return self.retrieve(
+            query,
+            top_k=top_k,
+            filter_tags=filter_tags,
+            filter_version=docs_version,
+        )

@@ -6,17 +6,20 @@ from typing import Dict, Generic, List, Optional, Type, TypeVar
 from sqlalchemy.orm import Session
 
 from ..models.database import (
-    Base, TicketModel, EvaluationModel, JudgeOutputModel,
+    Base, EvalItemModel, EvaluationModel, JudgeOutputModel,
     HumanQueueModel, HumanReviewModel, ExperimentModel,
     ExperimentResultModel, DocumentModel, TraceLogModel,
+    FailurePatternModel, MultiComparisonResultModel, PromptProposalModel,
     json_serializer
 )
 from ..models.schemas import (
-    TicketCreate, TicketInDB, EvaluationCreate, EvaluationInDB,
+    EvalItemCreate, EvalItemInDB, EvaluationCreate, EvaluationInDB,
     JudgeOutput, JudgeOutputInDB, HumanQueueItem, HumanQueueReason,
     HumanReviewCreate, HumanReviewInDB, ExperimentCreate, ExperimentInDB,
     ExperimentResult, ExperimentSummary, DocumentMeta, DocumentInDB,
-    DatasetSplit, Message, ClassificationResult
+    DatasetSplit, ClassificationResult,
+    FailurePattern, MultiComparisonSummary, ConfigRanking,
+    PromptProposalCreate, PromptProposalInDB, ProposalStatus
 )
 
 
@@ -52,20 +55,20 @@ class BaseRepository(ABC, Generic[T]):
         pass
 
 
-class TicketRepository:
-    """Repository for ticket operations."""
+class EvalItemRepository:
+    """Repository for eval item operations."""
 
     def __init__(self, db: Session):
         self.db = db
 
-    def get(self, ticket_id: str) -> Optional[TicketInDB]:
-        model = self.db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    def get(self, item_id: str) -> Optional[EvalItemInDB]:
+        model = self.db.query(EvalItemModel).filter(EvalItemModel.id == item_id).first()
         if not model:
             return None
         return self._to_schema(model)
 
-    def get_by_external_id(self, external_id: str) -> Optional[TicketInDB]:
-        model = self.db.query(TicketModel).filter(TicketModel.external_id == external_id).first()
+    def get_by_external_id(self, external_id: str) -> Optional[EvalItemInDB]:
+        model = self.db.query(EvalItemModel).filter(EvalItemModel.external_id == external_id).first()
         if not model:
             return None
         return self._to_schema(model)
@@ -75,27 +78,28 @@ class TicketRepository:
         split: Optional[DatasetSplit] = None,
         page: int = 1,
         page_size: int = 50
-    ) -> tuple[List[TicketInDB], int]:
-        query = self.db.query(TicketModel)
+    ) -> tuple[List[EvalItemInDB], int]:
+        query = self.db.query(EvalItemModel)
         if split:
-            query = query.filter(TicketModel.split == split)
+            query = query.filter(EvalItemModel.split == split)
 
         total = query.count()
         models = query.offset((page - 1) * page_size).limit(page_size).all()
         return [self._to_schema(m) for m in models], total
 
-    def get_by_split(self, split: DatasetSplit) -> List[TicketInDB]:
-        models = self.db.query(TicketModel).filter(TicketModel.split == split).all()
+    def get_by_split(self, split: DatasetSplit) -> List[EvalItemInDB]:
+        models = self.db.query(EvalItemModel).filter(EvalItemModel.split == split).all()
         return [self._to_schema(m) for m in models]
 
-    def create(self, ticket: TicketCreate, commit: bool = True) -> TicketInDB:
-        model = TicketModel(
+    def create(self, item: EvalItemCreate, commit: bool = True) -> EvalItemInDB:
+        model = EvalItemModel(
             id=generate_id(),
-            external_id=ticket.external_id,
-            split=ticket.split,
-            conversation_json=json_serializer([m.model_dump() for m in ticket.conversation]),
-            candidate_response=ticket.candidate_response,
-            metadata_json=json_serializer(ticket.metadata) if ticket.metadata else None,
+            external_id=item.external_id,
+            split=item.split,
+            system_prompt=item.system_prompt,
+            question=item.question,
+            response=item.response,
+            metadata_json=json_serializer(item.metadata) if item.metadata else None,
         )
         self.db.add(model)
         if commit:
@@ -103,17 +107,18 @@ class TicketRepository:
             self.db.refresh(model)
         return self._to_schema(model)
 
-    def create_batch(self, tickets: List[TicketCreate]) -> int:
-        """Batch create tickets in a single transaction."""
+    def create_batch(self, items: List[EvalItemCreate]) -> int:
+        """Batch create eval items in a single transaction."""
         models = []
-        for ticket in tickets:
-            model = TicketModel(
+        for item in items:
+            model = EvalItemModel(
                 id=generate_id(),
-                external_id=ticket.external_id,
-                split=ticket.split,
-                conversation_json=json_serializer([m.model_dump() for m in ticket.conversation]),
-                candidate_response=ticket.candidate_response,
-                metadata_json=json_serializer(ticket.metadata) if ticket.metadata else None,
+                external_id=item.external_id,
+                split=item.split,
+                system_prompt=item.system_prompt,
+                question=item.question,
+                response=item.response,
+                metadata_json=json_serializer(item.metadata) if item.metadata else None,
             )
             models.append(model)
         self.db.add_all(models)
@@ -124,26 +129,25 @@ class TicketRepository:
         """Commit pending changes."""
         self.db.commit()
 
-    def update_normalized(self, ticket_id: str, normalized_text: str, masked_text: str, commit: bool = True) -> Optional[TicketInDB]:
-        model = self.db.query(TicketModel).filter(TicketModel.id == ticket_id).first()
+    def update_masked(self, item_id: str, masked_text: str, commit: bool = True) -> Optional[EvalItemInDB]:
+        model = self.db.query(EvalItemModel).filter(EvalItemModel.id == item_id).first()
         if not model:
             return None
-        model.normalized_text = normalized_text
         model.masked_text = masked_text
         if commit:
             self.db.commit()
             self.db.refresh(model)
         return self._to_schema(model)
 
-    def _to_schema(self, model: TicketModel) -> TicketInDB:
-        return TicketInDB(
+    def _to_schema(self, model: EvalItemModel) -> EvalItemInDB:
+        return EvalItemInDB(
             id=model.id,
             external_id=model.external_id,
             split=model.split,
-            conversation=[Message(**m) for m in model.conversation],
-            candidate_response=model.candidate_response,
-            metadata=model.ticket_metadata,
-            normalized_text=model.normalized_text,
+            system_prompt=model.system_prompt,
+            question=model.question,
+            response=model.response,
+            metadata=model.item_metadata,
             masked_text=model.masked_text,
             created_at=model.created_at,
         )
@@ -161,9 +165,9 @@ class EvaluationRepository:
             return None
         return self._to_schema(model)
 
-    def get_by_ticket(self, ticket_id: str) -> List[EvaluationInDB]:
+    def get_by_item(self, item_id: str) -> List[EvaluationInDB]:
         models = self.db.query(EvaluationModel).filter(
-            EvaluationModel.ticket_id == ticket_id
+            EvaluationModel.item_id == item_id
         ).order_by(EvaluationModel.created_at.desc()).all()
         return [self._to_schema(m) for m in models]
 
@@ -183,7 +187,7 @@ class EvaluationRepository:
     def create(self, evaluation: EvaluationCreate, trace_id: Optional[str] = None, commit: bool = True) -> EvaluationInDB:
         model = EvaluationModel(
             id=generate_id(),
-            ticket_id=evaluation.ticket_id,
+            item_id=evaluation.item_id,
             prompt_version=evaluation.prompt_version,
             model_version=evaluation.model_version,
             docs_version=evaluation.docs_version,
@@ -225,7 +229,7 @@ class EvaluationRepository:
 
         return EvaluationInDB(
             id=model.id,
-            ticket_id=model.ticket_id,
+            item_id=model.item_id,
             prompt_version=model.prompt_version,
             model_version=model.model_version,
             docs_version=model.docs_version,
@@ -299,13 +303,13 @@ class HumanQueueRepository:
         ).order_by(HumanQueueModel.priority.desc(), HumanQueueModel.created_at).limit(limit).all()
         return [self._to_schema(m) for m in models]
 
-    def get_by_ticket(self, ticket_id: str) -> List[HumanQueueItem]:
-        models = self.db.query(HumanQueueModel).filter(HumanQueueModel.ticket_id == ticket_id).all()
+    def get_by_item(self, item_id: str) -> List[HumanQueueItem]:
+        models = self.db.query(HumanQueueModel).filter(HumanQueueModel.item_id == item_id).all()
         return [self._to_schema(m) for m in models]
 
     def create(
         self,
-        ticket_id: str,
+        item_id: str,
         evaluation_id: str,
         reason: HumanQueueReason,
         priority: int = 0,
@@ -313,7 +317,7 @@ class HumanQueueRepository:
     ) -> HumanQueueItem:
         model = HumanQueueModel(
             id=generate_id(),
-            ticket_id=ticket_id,
+            item_id=item_id,
             evaluation_id=evaluation_id,
             reason=reason,
             priority=priority,
@@ -326,12 +330,15 @@ class HumanQueueRepository:
             self.db.flush()
         return self._to_schema(model)
 
-    def mark_reviewed(self, queue_id: str) -> bool:
+    def mark_reviewed(self, queue_id: str, commit: bool = True) -> bool:
         model = self.db.query(HumanQueueModel).filter(HumanQueueModel.id == queue_id).first()
         if not model:
             return False
         model.reviewed = True
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         return True
 
     def count_pending(self) -> int:
@@ -340,7 +347,7 @@ class HumanQueueRepository:
     def _to_schema(self, model: HumanQueueModel) -> HumanQueueItem:
         return HumanQueueItem(
             id=model.id,
-            ticket_id=model.ticket_id,
+            item_id=model.item_id,
             evaluation_id=model.evaluation_id,
             reason=model.reason,
             priority=model.priority,
@@ -367,7 +374,7 @@ class HumanReviewRepository:
             return None
         return self._to_schema(model)
 
-    def create(self, review: HumanReviewCreate) -> HumanReviewInDB:
+    def create(self, review: HumanReviewCreate, commit: bool = True) -> HumanReviewInDB:
         model = HumanReviewModel(
             id=generate_id(),
             queue_item_id=review.queue_item_id,
@@ -380,20 +387,24 @@ class HumanReviewRepository:
             notes=review.notes,
         )
         self.db.add(model)
-        self.db.commit()
-        self.db.refresh(model)
+        if commit:
+            self.db.commit()
+            self.db.refresh(model)
+        else:
+            self.db.flush()
         return self._to_schema(model)
 
     def _to_schema(self, model: HumanReviewModel) -> HumanReviewInDB:
+        from ..models.database import json_deserializer
         return HumanReviewInDB(
             id=model.id,
             queue_item_id=model.queue_item_id,
             evaluation_id=model.evaluation_id,
             reviewer_id=model.reviewer_id,
             gold_label=model.gold_label,
-            gold_gates=model.gold_gates_json,
-            gold_scores=model.gold_scores_json,
-            gold_tags=model.gold_tags_json,
+            gold_gates=json_deserializer(model.gold_gates_json) if model.gold_gates_json else None,
+            gold_scores=json_deserializer(model.gold_scores_json) if model.gold_scores_json else None,
+            gold_tags=json_deserializer(model.gold_tags_json) if model.gold_tags_json else None,
             notes=model.notes,
             created_at=model.created_at,
         )
@@ -479,7 +490,7 @@ class ExperimentResultRepository:
         model = ExperimentResultModel(
             id=generate_id(),
             experiment_id=exp_id,
-            ticket_id=result.ticket_id,
+            item_id=result.item_id,
             eval_a_id=result.eval_a_id,
             eval_b_id=result.eval_b_id,
             score_diff_json=json_serializer(result.score_diff),
@@ -495,7 +506,7 @@ class ExperimentResultRepository:
     def _to_schema(self, model: ExperimentResultModel) -> ExperimentResult:
         from ..models.database import json_deserializer
         return ExperimentResult(
-            ticket_id=model.ticket_id,
+            item_id=model.item_id,
             eval_a_id=model.eval_a_id,
             eval_b_id=model.eval_b_id,
             score_diff=json_deserializer(model.score_diff_json),
@@ -566,7 +577,8 @@ class TraceLogRepository:
         input_data: Optional[dict] = None,
         output_data: Optional[dict] = None,
         latency_ms: Optional[float] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        commit: bool = True,
     ):
         model = TraceLogModel(
             id=generate_id(),
@@ -578,8 +590,201 @@ class TraceLogRepository:
             error=error,
         )
         self.db.add(model)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         return model
 
     def get_by_trace(self, trace_id: str):
         return self.db.query(TraceLogModel).filter(TraceLogModel.trace_id == trace_id).all()
+
+
+class FailurePatternRepository:
+    """Repository for failure pattern operations."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_batch(self, patterns: List[dict], analysis_run_id: str) -> int:
+        """Batch-create failure patterns from analysis results."""
+        models = []
+        for p in patterns:
+            model = FailurePatternModel(
+                id=generate_id(),
+                analysis_run_id=analysis_run_id,
+                tags_json=json_serializer(p["tags"]),
+                frequency=p["frequency"],
+                avg_scores_json=json_serializer(p.get("avg_scores", {})),
+                taxonomy_labels_json=json_serializer(p.get("taxonomy_labels", {})),
+                prompt_version=p.get("prompt_version"),
+                model_version=p.get("model_version"),
+            )
+            models.append(model)
+        self.db.add_all(models)
+        self.db.commit()
+        return len(models)
+
+    def get_latest(self, top_k: int = 10) -> List[FailurePattern]:
+        """Get patterns from the most recent analysis run."""
+        latest = self.db.query(FailurePatternModel).order_by(
+            FailurePatternModel.created_at.desc()
+        ).first()
+        if not latest:
+            return []
+        run_id = latest.analysis_run_id
+        models = self.db.query(FailurePatternModel).filter(
+            FailurePatternModel.analysis_run_id == run_id
+        ).order_by(FailurePatternModel.frequency.desc()).limit(top_k).all()
+        return [self._to_schema(m) for m in models]
+
+    def get_latest_run_id(self) -> Optional[str]:
+        """Get the most recent analysis run ID."""
+        latest = self.db.query(FailurePatternModel).order_by(
+            FailurePatternModel.created_at.desc()
+        ).first()
+        return latest.analysis_run_id if latest else None
+
+    def _to_schema(self, model: FailurePatternModel) -> FailurePattern:
+        from ..models.database import json_deserializer
+        return FailurePattern(
+            id=model.id,
+            analysis_run_id=model.analysis_run_id,
+            tags=json_deserializer(model.tags_json) or [],
+            frequency=model.frequency,
+            avg_scores=json_deserializer(model.avg_scores_json) or {},
+            taxonomy_labels=json_deserializer(model.taxonomy_labels_json) or {},
+            prompt_version=model.prompt_version,
+            model_version=model.model_version,
+            created_at=model.created_at,
+        )
+
+
+class MultiComparisonRepository:
+    """Repository for multi-comparison results."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_item_result(
+        self,
+        experiment_id: str,
+        item_id: str,
+        config_results: Dict,
+        rankings: List,
+        winner_config_id: Optional[str],
+    ) -> str:
+        model = MultiComparisonResultModel(
+            id=generate_id(),
+            experiment_id=experiment_id,
+            item_id=item_id,
+            config_results_json=json_serializer(config_results),
+            rankings_json=json_serializer(rankings),
+            winner_config_id=winner_config_id,
+        )
+        self.db.add(model)
+        self.db.commit()
+        return model.id
+
+    def get_by_experiment(self, experiment_id: str) -> List[Dict]:
+        models = self.db.query(MultiComparisonResultModel).filter(
+            MultiComparisonResultModel.experiment_id == experiment_id
+        ).all()
+        from ..models.database import json_deserializer
+        return [
+            {
+                "id": m.id,
+                "item_id": m.item_id,
+                "config_results": json_deserializer(m.config_results_json),
+                "rankings": json_deserializer(m.rankings_json),
+                "winner_config_id": m.winner_config_id,
+            }
+            for m in models
+        ]
+
+
+class ProposalRepository:
+    """Repository for prompt proposal operations."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(self, proposal: PromptProposalCreate) -> PromptProposalInDB:
+        from datetime import datetime as dt
+        model = PromptProposalModel(
+            id=generate_id(),
+            prompt_name=proposal.prompt_name,
+            current_version=proposal.current_version,
+            proposed_prompt=proposal.proposed_prompt,
+            status="pending",
+            created_by=proposal.created_by,
+            created_at=dt.utcnow(),
+            updated_at=dt.utcnow(),
+        )
+        self.db.add(model)
+        self.db.commit()
+        self.db.refresh(model)
+        return self._to_schema(model)
+
+    def get(self, proposal_id: str) -> Optional[PromptProposalInDB]:
+        model = self.db.query(PromptProposalModel).filter(
+            PromptProposalModel.id == proposal_id
+        ).first()
+        return self._to_schema(model) if model else None
+
+    def get_all(self, status=None, limit: int = 50) -> List[PromptProposalInDB]:
+        """List proposals, optionally filtered by status (str or ProposalStatus enum)."""
+        query = self.db.query(PromptProposalModel)
+        if status is not None:
+            # Accept both string and enum
+            status_val = status.value if hasattr(status, "value") else status
+            query = query.filter(PromptProposalModel.status == status_val)
+        models = query.order_by(PromptProposalModel.created_at.desc()).limit(limit).all()
+        return [self._to_schema(m) for m in models]
+
+    def update_status(
+        self,
+        proposal_id: str,
+        status,  # str or ProposalStatus enum
+        extra: Optional[Dict] = None,
+    ) -> Optional[PromptProposalInDB]:
+        """Update proposal status and apply any extra field updates."""
+        from datetime import datetime as dt
+        model = self.db.query(PromptProposalModel).filter(
+            PromptProposalModel.id == proposal_id
+        ).first()
+        if not model:
+            return None
+        # Handle both string and enum
+        model.status = status.value if hasattr(status, "value") else status
+        model.updated_at = dt.utcnow()
+        # Apply extra fields
+        for key, value in (extra or {}).items():
+            if key == "test_experiment_id":
+                model.test_experiment_id = value
+            elif key == "proposed_langfuse_version":
+                model.proposed_langfuse_version = value
+            elif key == "improvement_metrics":
+                model.improvement_metrics_json = json_serializer(value) if value is not None else None
+            elif key == "deployed_at":
+                model.deployed_at = value
+        self.db.commit()
+        self.db.refresh(model)
+        return self._to_schema(model)
+
+    def _to_schema(self, model: PromptProposalModel) -> PromptProposalInDB:
+        from ..models.database import json_deserializer
+        return PromptProposalInDB(
+            id=model.id,
+            prompt_name=model.prompt_name,
+            current_version=model.current_version,
+            proposed_prompt=model.proposed_prompt,
+            proposed_langfuse_version=model.proposed_langfuse_version,
+            status=ProposalStatus(model.status),
+            test_experiment_id=model.test_experiment_id,
+            improvement_metrics=json_deserializer(model.improvement_metrics_json) or {},
+            created_by=model.created_by or "auto",
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            deployed_at=model.deployed_at,
+        )

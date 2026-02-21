@@ -10,10 +10,19 @@ from ..core.rubric import GateType, ScoreType, GATE_DESCRIPTIONS, SCORE_RUBRICS
 class OpenAIProvider(LLMProvider):
     """OpenAI API provider."""
 
-    def __init__(self, api_key: str, default_model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, default_model: str = "gpt-4o-mini", instrumentation=None):
         self.api_key = api_key
         self.default_model = default_model
         self._client = None
+        self.instrumentation = instrumentation  # LangfuseInstrumentation for prompt registry
+
+    def _get_prompt_text(self, name: str, label: str = "production") -> Optional[str]:
+        """Fetch compiled prompt text from Langfuse, returns None on failure."""
+        if self.instrumentation:
+            prompt_obj = self.instrumentation.get_prompt(name, label=label)
+            if prompt_obj and hasattr(prompt_obj, "prompt"):
+                return prompt_obj.prompt
+        return None
 
     @property
     def name(self) -> str:
@@ -57,17 +66,29 @@ class OpenAIProvider(LLMProvider):
         self,
         text: str,
         labels: List[str],
-        label_descriptions: Optional[Dict[str, str]] = None
+        label_descriptions: Optional[Dict[str, str]] = None,
+        prompt_label: str = "production",
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Classify text using OpenAI."""
+        """Classify text using OpenAI. Loads prompt from Langfuse if available."""
         descriptions = label_descriptions or LABEL_DESCRIPTIONS
 
-        prompt = f"""Classify the following customer support message into one of these categories.
+        # Try loading from Langfuse prompt registry first
+        langfuse_prompt = self._get_prompt_text("classify", label=prompt_label)
+        if langfuse_prompt:
+            labels_str = "\n".join(
+                f"- {lbl}: {descriptions.get(lbl, descriptions.get(TaxonomyLabel(lbl), ''))}"
+                for lbl in labels
+            )
+            prompt = langfuse_prompt.replace("{{labels}}", labels_str).replace("{{text}}", text)
+        else:
+            # Hardcoded fallback
+            prompt = f"""Classify the following text/question into one of these task categories.
 
 Categories:
 {chr(10).join(f'- {label}: {descriptions.get(label, descriptions.get(TaxonomyLabel(label), ""))}' for label in labels)}
 
-Message:
+Text:
 {text}
 
 Respond with a JSON object containing:
@@ -75,11 +96,14 @@ Respond with a JSON object containing:
 - "confidence": a number between 0 and 1
 - "required_slots": list of information needed for this category
 - "detected_slots": object with detected slot values
-- "missing_slots": list of slots not found in the message
+- "missing_slots": list of slots not found in the text
 
 JSON Response:"""
 
-        response = await self.complete([LLMMessage(role="user", content=prompt)])
+        response = await self.complete(
+            [LLMMessage(role="user", content=prompt)],
+            model=model,
+        )
 
         try:
             result = json.loads(response.content)
@@ -103,52 +127,69 @@ JSON Response:"""
 
     async def evaluate(
         self,
-        conversation: str,
-        candidate_response: str,
+        question: str,
+        response: str,
         rubric: Dict[str, Any],
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        prompt_label: str = "production",
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Evaluate a candidate response using OpenAI."""
+        """Evaluate a response using OpenAI. Loads prompt from Langfuse if available."""
         context_section = ""
         if context:
-            context_section = f"""
-Reference Documentation (use to verify claims):
-{context}
-"""
+            context_section = f"Reference Documentation (use to verify claims):\n{context}\n"
 
-        prompt = f"""You are a QA evaluator for customer support responses.
+        system_prompt_section = ""
+        if system_prompt:
+            system_prompt_section = f"System Prompt (instructions given to the model):\n{system_prompt}\n"
+
+        # Try loading judge prompt from Langfuse
+        langfuse_prompt = self._get_prompt_text("judge_evaluate", label=prompt_label)
+        if langfuse_prompt:
+            prompt = (
+                langfuse_prompt
+                .replace("{{context_section}}", context_section)
+                .replace("{{system_prompt_section}}", system_prompt_section)
+                .replace("{{question}}", question)
+                .replace("{{response}}", response)
+            )
+        else:
+            # Hardcoded fallback
+            prompt = f"""You are a QA evaluator for AI-generated responses.
 
 {context_section}
+{system_prompt_section}
 
-Customer Conversation:
-{conversation}
+Question/Instruction:
+{question}
 
-Candidate Response to Evaluate:
-{candidate_response}
+Response to Evaluate:
+{response}
 
 Evaluation Rubric:
 
 GATES (pass/fail):
-1. policy_safety: {GATE_DESCRIPTIONS[GateType.POLICY_SAFETY]}
-2. overclaim: {GATE_DESCRIPTIONS[GateType.OVERCLAIM]}
+1. factual_safety: {GATE_DESCRIPTIONS[GateType.FACTUAL_SAFETY]}
+2. hallucination: {GATE_DESCRIPTIONS[GateType.HALLUCINATION]}
 
 SCORES (1-5 scale):
 {chr(10).join(f'{st.value}: ' + chr(10).join(f'  {score}: {desc}' for score, desc in SCORE_RUBRICS[st].items()) for st in ScoreType)}
 
 FAILURE TAGS to consider:
-intent_miss, missing_slot, no_next_step, policy_pii, overclaim, escalation_needed, tool_needed, tone_issue, contradiction, sso_admin_required, permission_model_mismatch, billing_context_missing
+instruction_miss, incomplete_answer, hallucination, logic_error, format_violation, over_verbose, under_verbose, wrong_language, unsafe_content, citation_missing, off_topic, partial_answer
 
 Respond with a JSON object:
 {{
   "gates": [
-    {{"gate_type": "policy_safety", "passed": true/false, "reason": "...", "evidence": "..."}},
-    {{"gate_type": "overclaim", "passed": true/false, "reason": "...", "evidence": "..."}}
+    {{"gate_type": "factual_safety", "passed": true/false, "reason": "...", "evidence": "..."}},
+    {{"gate_type": "hallucination", "passed": true/false, "reason": "...", "evidence": "..."}}
   ],
   "scores": [
-    {{"score_type": "understanding", "score": 1-5, "justification": "..."}},
-    {{"score_type": "info_strategy", "score": 1-5, "justification": "..."}},
-    {{"score_type": "actionability", "score": 1-5, "justification": "..."}},
-    {{"score_type": "communication", "score": 1-5, "justification": "..."}}
+    {{"score_type": "instruction_following", "score": 1-5, "justification": "..."}},
+    {{"score_type": "reasoning_quality", "score": 1-5, "justification": "..."}},
+    {{"score_type": "completeness", "score": 1-5, "justification": "..."}},
+    {{"score_type": "clarity", "score": 1-5, "justification": "..."}}
   ],
   "failure_tags": ["tag1", "tag2"],
   "summary_of_issue": "One sentence summary",
@@ -158,22 +199,25 @@ Respond with a JSON object:
 
 JSON Response:"""
 
-        response = await self.complete([LLMMessage(role="user", content=prompt)])
+        llm_response = await self.complete(
+            [LLMMessage(role="user", content=prompt)],
+            model=model,
+        )
 
         try:
-            return json.loads(response.content)
+            return json.loads(llm_response.content)
         except json.JSONDecodeError:
             # Return empty evaluation on parse failure
             return {
                 "gates": [
-                    {"gate_type": "policy_safety", "passed": True, "reason": None, "evidence": None},
-                    {"gate_type": "overclaim", "passed": True, "reason": None, "evidence": None},
+                    {"gate_type": "factual_safety", "passed": True, "reason": None, "evidence": None},
+                    {"gate_type": "hallucination", "passed": True, "reason": None, "evidence": None},
                 ],
                 "scores": [
-                    {"score_type": "understanding", "score": 3, "justification": "Parse error"},
-                    {"score_type": "info_strategy", "score": 3, "justification": "Parse error"},
-                    {"score_type": "actionability", "score": 3, "justification": "Parse error"},
-                    {"score_type": "communication", "score": 3, "justification": "Parse error"},
+                    {"score_type": "instruction_following", "score": 3, "justification": "Parse error"},
+                    {"score_type": "reasoning_quality", "score": 3, "justification": "Parse error"},
+                    {"score_type": "completeness", "score": 3, "justification": "Parse error"},
+                    {"score_type": "clarity", "score": 3, "justification": "Parse error"},
                 ],
                 "failure_tags": [],
                 "summary_of_issue": "Evaluation parse error",

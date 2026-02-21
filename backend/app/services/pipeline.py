@@ -7,8 +7,8 @@ from datetime import datetime
 import logging
 
 from ..models.schemas import (
-    TicketInDB, EvaluationCreate, EvaluationInDB, ClassificationResult,
-    JudgeOutput, GateResult, ScoreResult, HumanQueueReason, RAGResult, Message
+    EvalItemInDB, EvaluationCreate, EvaluationInDB, ClassificationResult,
+    JudgeOutput, GateResult, ScoreResult, HumanQueueReason, RAGResult
 )
 from ..core.taxonomy import TaxonomyLabel, FailureTag
 from ..core.rubric import SAMPLING_RULES
@@ -35,33 +35,33 @@ class EvaluationPipeline:
         self.db_session = db_session
         self.seen_tags: Set[str] = set()
 
-    async def process_ticket(
+    async def process_item(
         self,
-        ticket: TicketInDB,
+        item: EvalItemInDB,
         prompt_version: str,
         model_version: str,
         docs_version: str,
         sampling_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Process a single ticket through the evaluation pipeline."""
+        """Process a single item through the evaluation pipeline."""
         from ..db.repository import (
-            TicketRepository, EvaluationRepository, JudgeOutputRepository,
+            EvalItemRepository, EvaluationRepository, JudgeOutputRepository,
             HumanQueueRepository
         )
 
         # Create trace
-        trace_id = f"eval_{ticket.id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        trace_id = f"eval_{item.id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         trace = self.instrumentation.create_trace(
             trace_id=trace_id,
-            name=f"evaluate_ticket_{ticket.id}",
+            name=f"evaluate_item_{item.id}",
             tags=[
-                f"split:{ticket.split.value}",
+                f"split:{item.split.value}",
                 f"prompt:{prompt_version}",
                 f"model:{model_version}",
                 f"docs:{docs_version}",
             ],
             metadata={
-                "ticket_id": ticket.id,
+                "item_id": item.id,
                 "prompt_version": prompt_version,
                 "model_version": model_version,
                 "docs_version": docs_version,
@@ -70,7 +70,7 @@ class EvaluationPipeline:
 
         start_time = time.time()
         result = {
-            "ticket_id": ticket.id,
+            "item_id": item.id,
             "trace_id": trace_id,
             "gate_failed": False,
             "human_queued": False,
@@ -79,23 +79,28 @@ class EvaluationPipeline:
         }
 
         try:
-            # Step 1: Normalize
-            normalized_text = await self._normalize(ticket, trace)
+            # Step 1: Prepare text
+            prepared_text = await self._prepare(item, trace)
 
             # Step 2: Mask PII
-            masked_text = await self._mask_pii(normalized_text, trace)
+            masked_text = await self._mask_pii(prepared_text, trace)
 
-            # Update ticket with normalized/masked text
-            ticket_repo = TicketRepository(self.db_session)
-            ticket_repo.update_normalized(ticket.id, normalized_text, masked_text, commit=False)
+            # Update item with masked text
+            item_repo = EvalItemRepository(self.db_session)
+            item_repo.update_masked(item.id, masked_text, commit=False)
 
             # Step 3: Classify
-            classification = await self._classify(masked_text, trace)
+            classification = await self._classify(
+                masked_text,
+                trace,
+                prompt_version=prompt_version,
+                model_version=model_version,
+            )
 
             # Step 4: RAG Retrieve
             rag_result = await self._rag_retrieve(
-                masked_text,
-                ticket.candidate_response,
+                item.question,
+                item.response,
                 classification.label,
                 docs_version,
                 trace
@@ -103,17 +108,20 @@ class EvaluationPipeline:
 
             # Step 5: Judge (evaluate)
             judge_output = await self._judge(
-                masked_text,
-                ticket.candidate_response,
+                item.question,
+                item.response,
                 rag_result,
-                trace
+                trace,
+                system_prompt=item.system_prompt,
+                prompt_version=prompt_version,
+                model_version=model_version,
             )
 
             # Persist evaluation, classification, and judge output atomically
             eval_repo = EvaluationRepository(self.db_session)
             evaluation = eval_repo.create(
                 EvaluationCreate(
-                    ticket_id=ticket.id,
+                    item_id=item.id,
                     prompt_version=prompt_version,
                     model_version=model_version,
                     docs_version=docs_version,
@@ -154,7 +162,7 @@ class EvaluationPipeline:
             if should_queue:
                 queue_repo = HumanQueueRepository(self.db_session)
                 queue_repo.create(
-                    ticket_id=ticket.id,
+                    item_id=item.id,
                     evaluation_id=evaluation.id,
                     reason=queue_reason,
                     priority=self._calculate_priority(queue_reason, judge_output),
@@ -174,7 +182,7 @@ class EvaluationPipeline:
 
         except Exception as e:
             self.db_session.rollback()
-            logger.error(f"Error processing ticket {ticket.id}: {e}")
+            logger.error(f"Error processing item {item.id}: {e}")
             self.instrumentation.record_span(
                 trace,
                 "pipeline_error",
@@ -188,26 +196,26 @@ class EvaluationPipeline:
 
         return result
 
-    async def _normalize(self, ticket: TicketInDB, trace) -> str:
-        """Normalize conversation to text."""
+    async def _prepare(self, item: EvalItemInDB, trace) -> str:
+        """Prepare text from item fields."""
         start = time.time()
 
-        # Convert conversation to text
-        lines = []
-        for msg in ticket.conversation:
-            role = msg.role.upper()
-            lines.append(f"[{role}]: {msg.content}")
-        normalized = "\n\n".join(lines)
+        parts = []
+        if item.system_prompt:
+            parts.append(f"[SYSTEM]: {item.system_prompt}")
+        parts.append(f"[QUESTION]: {item.question}")
+        parts.append(f"[RESPONSE]: {item.response}")
+        prepared = "\n\n".join(parts)
 
         self.instrumentation.record_span(
             trace,
-            "normalize",
-            input_data={"message_count": len(ticket.conversation)},
-            output_data={"text_length": len(normalized)},
+            "prepare",
+            input_data={"has_system_prompt": bool(item.system_prompt)},
+            output_data={"text_length": len(prepared)},
             latency_ms=(time.time() - start) * 1000,
         )
 
-        return normalized
+        return prepared
 
     async def _mask_pii(self, text: str, trace) -> str:
         """Mask PII in text."""
@@ -254,12 +262,23 @@ class EvaluationPipeline:
 
         return masked
 
-    async def _classify(self, text: str, trace) -> ClassificationResult:
-        """Classify the ticket."""
+    async def _classify(
+        self,
+        text: str,
+        trace,
+        prompt_version: str,
+        model_version: str,
+    ) -> ClassificationResult:
+        """Classify the item."""
         start = time.time()
 
         labels = [label.value for label in TaxonomyLabel]
-        result = await self.provider.classify(text, labels)
+        result = await self.provider.classify(
+            text,
+            labels,
+            prompt_label=prompt_version,
+            model=model_version,
+        )
 
         classification = ClassificationResult(
             label=result["label"],
@@ -285,8 +304,8 @@ class EvaluationPipeline:
 
     async def _rag_retrieve(
         self,
-        conversation: str,
-        candidate_response: str,
+        question: str,
+        response: str,
         taxonomy_label: str,
         docs_version: str,
         trace
@@ -295,16 +314,17 @@ class EvaluationPipeline:
         start = time.time()
 
         result = self.retriever.get_context_for_evaluation(
-            conversation=conversation,
-            candidate_response=candidate_response,
+            question=question,
+            response=response,
             taxonomy_label=taxonomy_label,
+            docs_version=docs_version,
             top_k=5,
         )
 
         self.instrumentation.record_span(
             trace,
             "rag_retrieve",
-            input_data={"query_length": len(conversation), "taxonomy": taxonomy_label},
+            input_data={"query_length": len(question), "taxonomy": taxonomy_label},
             output_data={
                 "doc_count": len(result.documents),
                 "doc_ids": [d.doc_id for d in result.documents],
@@ -316,12 +336,15 @@ class EvaluationPipeline:
 
     async def _judge(
         self,
-        conversation: str,
-        candidate_response: str,
+        question: str,
+        response: str,
         rag_result: RAGResult,
-        trace
+        trace,
+        system_prompt: Optional[str] = None,
+        prompt_version: str = "production",
+        model_version: str = "mock",
     ) -> JudgeOutput:
-        """Evaluate the candidate response."""
+        """Evaluate the response."""
         start = time.time()
 
         # Build context from RAG documents
@@ -331,10 +354,13 @@ class EvaluationPipeline:
         ]) if rag_result.documents else None
 
         result = await self.provider.evaluate(
-            conversation=conversation,
-            candidate_response=candidate_response,
+            question=question,
+            response=response,
             rubric={},  # Rubric is built into provider
             context=context,
+            system_prompt=system_prompt,
+            prompt_label=prompt_version,
+            model=model_version,
         )
 
         # Convert to JudgeOutput
@@ -354,8 +380,8 @@ class EvaluationPipeline:
             trace,
             "judge",
             input_data={
-                "conversation_length": len(conversation),
-                "response_length": len(candidate_response),
+                "question_length": len(question),
+                "response_length": len(response),
                 "context_docs": len(rag_result.documents),
             },
             output_data={
@@ -390,7 +416,7 @@ class EvaluationPipeline:
         if not should_queue:
             threshold = config.get("low_score_threshold", 2)
             for score in judge_output.scores:
-                if score.score_type in ["understanding", "actionability"]:
+                if score.score_type in ["instruction_following", "completeness"]:
                     if score.score <= threshold:
                         should_queue = True
                         reason = HumanQueueReason.LOW_SCORE

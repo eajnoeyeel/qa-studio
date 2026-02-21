@@ -44,7 +44,9 @@ class LLMProvider(ABC):
         self,
         text: str,
         labels: List[str],
-        label_descriptions: Optional[Dict[str, str]] = None
+        label_descriptions: Optional[Dict[str, str]] = None,
+        prompt_label: str = "production",
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Classify text into one of the labels."""
         pass
@@ -52,10 +54,13 @@ class LLMProvider(ABC):
     @abstractmethod
     async def evaluate(
         self,
-        conversation: str,
-        candidate_response: str,
+        question: str,
+        response: str,
         rubric: Dict[str, Any],
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        prompt_label: str = "production",
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Evaluate a candidate response against a rubric."""
+        """Evaluate a response against a rubric."""
         pass

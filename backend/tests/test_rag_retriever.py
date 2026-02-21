@@ -118,8 +118,8 @@ def test_check_claim_unsupported(retriever):
 def test_get_context_for_evaluation(retriever):
     """Test getting context for evaluation."""
     result = retriever.get_context_for_evaluation(
-        conversation="User asks about adding seats",
-        candidate_response="You can add seats in Settings > Billing",
+        question="How do I add more seats to my plan?",
+        response="You can add seats in Settings > Billing",
         taxonomy_label="billing_seats",
         top_k=3
     )

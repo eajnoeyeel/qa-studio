@@ -2,6 +2,9 @@
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
+from app.api import routes as api_routes
+from app.db.repository import EvalItemRepository, EvaluationRepository, HumanQueueRepository
+from app.models.schemas import EvalItemCreate, EvaluationCreate, HumanQueueReason
 
 
 @pytest.fixture
@@ -25,32 +28,32 @@ def test_root_endpoint(client):
     response = client.get("/")
     assert response.status_code == 200
     data = response.json()
-    assert data["name"] == "SaaS CS QA Studio"
+    assert data["name"] == "QA Studio"
     assert "version" in data
 
 
-def test_list_tickets_empty(client):
-    """Test listing tickets when empty."""
-    response = client.get("/api/v1/tickets")
+def test_list_items_empty(client):
+    """Test listing items when empty."""
+    response = client.get("/api/v1/items")
     assert response.status_code == 200
     data = response.json()
-    assert "tickets" in data
+    assert "items" in data
     assert "total" in data
-    assert isinstance(data["tickets"], list)
+    assert isinstance(data["items"], list)
 
 
-def test_list_tickets_with_pagination(client):
-    """Test listing tickets with pagination params."""
-    response = client.get("/api/v1/tickets?page=1&page_size=10")
+def test_list_items_with_pagination(client):
+    """Test listing items with pagination params."""
+    response = client.get("/api/v1/items?page=1&page_size=10")
     assert response.status_code == 200
     data = response.json()
     assert data["page"] == 1
     assert data["page_size"] == 10
 
 
-def test_get_nonexistent_ticket(client):
-    """Test getting a ticket that doesn't exist."""
-    response = client.get("/api/v1/tickets/nonexistent-id")
+def test_get_nonexistent_item(client):
+    """Test getting an item that doesn't exist."""
+    response = client.get("/api/v1/items/nonexistent-id")
     assert response.status_code == 404
 
 
@@ -91,7 +94,7 @@ def test_evaluate_run_validation(client):
             "docs_version": "v1"
         }
     )
-    # Should succeed even with no tickets
+    # Should succeed even with no items
     assert response.status_code == 200
     data = response.json()
     assert "processed_count" in data
@@ -115,3 +118,59 @@ def test_documents_reindex(client):
     data = response.json()
     assert "success" in data
     assert "document_count" in data
+
+
+def test_submit_human_review_returns_typed_gold_fields(client):
+    """Ensure human review endpoint returns JSON-typed gold fields, not serialized strings."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        eval_repo = EvaluationRepository(db)
+        queue_repo = HumanQueueRepository(db)
+
+        item = item_repo.create(
+            EvalItemCreate(
+                external_id="review-test-item",
+                split="dev",
+                question="What is 2+2?",
+                response="4",
+            ),
+            commit=True,
+        )
+        evaluation = eval_repo.create(
+            EvaluationCreate(
+                item_id=item.id,
+                prompt_version="v1",
+                model_version="mock",
+                docs_version="v1",
+            ),
+            commit=True,
+        )
+        queue_item = queue_repo.create(
+            item_id=item.id,
+            evaluation_id=evaluation.id,
+            reason=HumanQueueReason.MANUAL,
+            priority=1,
+            commit=True,
+        )
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/human/review",
+        json={
+            "queue_item_id": queue_item.id,
+            "evaluation_id": evaluation.id,
+            "gold_label": "math",
+            "gold_gates": {"hallucination": True},
+            "gold_scores": {"clarity": 4},
+            "gold_tags": ["off_topic"],
+            "notes": "typed-fields-check",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["gold_gates"] == {"hallucination": True}
+    assert data["gold_scores"] == {"clarity": 4}
+    assert data["gold_tags"] == ["off_topic"]

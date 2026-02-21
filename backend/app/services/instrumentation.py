@@ -1,4 +1,7 @@
-"""Langfuse instrumentation wrapper with graceful fallback."""
+"""Langfuse instrumentation wrapper with graceful fallback.
+
+Compatible with Langfuse SDK v3.x.
+"""
 import time
 import logging
 from contextlib import contextmanager
@@ -48,14 +51,22 @@ class LangfuseInstrumentation:
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None
     ):
-        """Create a new trace."""
+        """Create a new trace via a root span (Langfuse v3)."""
         if self.enabled and self.langfuse:
             try:
-                return self.langfuse.trace(
-                    id=trace_id,
+                # In v3, start_span creates a trace automatically
+                span = self.langfuse.start_span(
                     name=name,
-                    tags=tags or [],
-                    metadata=metadata or {},
+                    input={"trace_id": trace_id},
+                    metadata={**(metadata or {}), "tags": tags or []},
+                )
+                return LangfuseTraceWrapper(
+                    trace_id=trace_id,
+                    name=name,
+                    root_span=span,
+                    langfuse=self.langfuse,
+                    tags=tags,
+                    metadata=metadata,
                 )
             except Exception as e:
                 logger.error(f"Failed to create Langfuse trace: {e}")
@@ -72,15 +83,9 @@ class LangfuseInstrumentation:
     ):
         """Context manager for spans."""
         start_time = time.time()
-        span_obj = None
         error_msg = None
 
         try:
-            if self.enabled and hasattr(trace, 'span'):
-                span_obj = trace.span(
-                    name=name,
-                    input=input_data,
-                )
             yield
         except Exception as e:
             error_msg = str(e)
@@ -88,14 +93,9 @@ class LangfuseInstrumentation:
         finally:
             latency_ms = (time.time() - start_time) * 1000
 
-            if span_obj:
-                try:
-                    span_obj.end(
-                        output={"latency_ms": latency_ms},
-                        status_message="error" if error_msg else "success",
-                    )
-                except Exception:
-                    pass
+            # Record span on the trace wrapper
+            if hasattr(trace, 'record_child_span'):
+                trace.record_child_span(name, input_data, latency_ms, error_msg)
 
             # Log to fallback
             self._log_span(trace, name, input_data, latency_ms, error_msg)
@@ -110,18 +110,8 @@ class LangfuseInstrumentation:
         error: Optional[str] = None
     ):
         """Record a completed span."""
-        if self.enabled and hasattr(trace, 'span'):
-            try:
-                span = trace.span(
-                    name=name,
-                    input=input_data,
-                )
-                span.end(
-                    output=output_data,
-                    status_message="error" if error else "success",
-                )
-            except Exception as e:
-                logger.error(f"Failed to record Langfuse span: {e}")
+        if hasattr(trace, 'record_child_span'):
+            trace.record_child_span(name, input_data, latency_ms, error, output_data)
 
         self._log_span(trace, name, input_data, latency_ms, error)
 
@@ -133,12 +123,15 @@ class LangfuseInstrumentation:
         comment: Optional[str] = None
     ):
         """Record a score."""
-        if self.enabled and hasattr(trace, 'score'):
+        if self.enabled and self.langfuse:
             try:
-                trace.score(
+                trace_id = getattr(trace, 'trace_id', None)
+                self.langfuse.create_score(
                     name=name,
                     value=value,
+                    trace_id=trace_id,
                     comment=comment,
+                    data_type="NUMERIC",
                 )
             except Exception as e:
                 logger.error(f"Failed to record Langfuse score: {e}")
@@ -155,7 +148,7 @@ class LangfuseInstrumentation:
         error: Optional[str]
     ):
         """Log span to local storage."""
-        trace_id = getattr(trace, 'id', str(trace))
+        trace_id = getattr(trace, 'trace_id', getattr(trace, 'id', str(trace)))
         ms_str = f"{latency_ms:.2f}ms" if latency_ms is not None else "N/A"
         logger.debug(f"Span: {trace_id}/{name} - {ms_str} - {'ERROR: ' + error if error else 'OK'}")
 
@@ -164,12 +157,16 @@ class LangfuseInstrumentation:
             try:
                 from ..db.repository import TraceLogRepository
                 repo = TraceLogRepository(self.db_session)
+                in_tx = bool(self.db_session.in_transaction()) if hasattr(self.db_session, "in_transaction") else False
                 repo.create(
                     trace_id=trace_id,
                     span_name=name,
                     input_data=input_data,
                     latency_ms=latency_ms,
                     error=error,
+                    # Avoid breaking caller transaction atomicity by committing only
+                    # when no external transaction is in progress.
+                    commit=not in_tx,
                 )
             except Exception as e:
                 logger.error(f"Failed to save trace to DB: {e}")
@@ -181,6 +178,111 @@ class LangfuseInstrumentation:
                 self.langfuse.flush()
             except Exception as e:
                 logger.error(f"Failed to flush Langfuse: {e}")
+
+    # ==================== Prompt Registry ====================
+
+    def get_prompt(self, name: str, label: str = "production"):
+        """Fetch a prompt from Langfuse by name and label. Returns None if unavailable."""
+        if self.enabled and self.langfuse:
+            try:
+                return self.langfuse.get_prompt(name, label=label)
+            except Exception as e:
+                logger.debug(f"Langfuse prompt '{name}' not found ({label}): {e}")
+        return None
+
+    def list_prompts(self) -> List[dict]:
+        """List all prompts from Langfuse."""
+        if self.enabled and self.langfuse:
+            try:
+                prompts = self.langfuse.list_prompts()
+                return [
+                    {"name": p.name, "labels": getattr(p, "labels", []), "versions": getattr(p, "versions", [])}
+                    for p in (prompts.data if hasattr(prompts, "data") else [])
+                ]
+            except Exception as e:
+                logger.error(f"Failed to list Langfuse prompts: {e}")
+        return []
+
+    def create_prompt(self, name: str, prompt: str, labels: Optional[List[str]] = None) -> Optional[dict]:
+        """Register a prompt in Langfuse with optional labels."""
+        if self.enabled and self.langfuse:
+            try:
+                result = self.langfuse.create_prompt(
+                    name=name,
+                    prompt=prompt,
+                    labels=labels or ["draft"],
+                    type="text",
+                )
+                return {"name": name, "version": getattr(result, "version", None), "labels": labels or ["draft"]}
+            except Exception as e:
+                logger.error(f"Failed to create Langfuse prompt '{name}': {e}")
+        return None
+
+    def update_prompt_label(self, name: str, version: int, new_label: str) -> bool:
+        """Update a prompt version's label (e.g., set to 'production')."""
+        if self.enabled and self.langfuse:
+            try:
+                self.langfuse.update_prompt(name=name, version=version, new_label=new_label)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to update Langfuse prompt label: {e}")
+        return False
+
+
+class LangfuseTraceWrapper:
+    """Wraps a Langfuse v3 root span to provide a trace-like interface."""
+
+    def __init__(self, trace_id, name, root_span, langfuse, tags=None, metadata=None):
+        self.trace_id = trace_id
+        self.id = trace_id
+        self.name = name
+        self.root_span = root_span
+        self.langfuse = langfuse
+        self.tags = tags or []
+        self.metadata = metadata or {}
+
+    def record_child_span(self, name, input_data=None, latency_ms=None, error=None, output_data=None):
+        """Record a child span under this trace."""
+        try:
+            child = self.langfuse.start_span(
+                name=name,
+                input=input_data,
+            )
+            child.update(
+                output=output_data or {"latency_ms": latency_ms},
+                level="ERROR" if error else "DEFAULT",
+                status_message="error" if error else "success",
+            )
+            child.end()
+        except Exception as e:
+            logger.error(f"Failed to record Langfuse child span: {e}")
+
+    def span(self, name: str, input: Optional[Dict] = None):
+        """Create a child span (compatibility method)."""
+        try:
+            return self.langfuse.start_span(name=name, input=input)
+        except Exception:
+            return MockSpan(name, input)
+
+    def score(self, name: str, value: float, comment: Optional[str] = None):
+        """Record a score on this trace."""
+        try:
+            self.langfuse.create_score(
+                name=name,
+                value=value,
+                trace_id=self.trace_id,
+                comment=comment,
+                data_type="NUMERIC",
+            )
+        except Exception as e:
+            logger.error(f"Failed to record score: {e}")
+
+    def end(self):
+        """End the root span."""
+        try:
+            self.root_span.end()
+        except Exception:
+            pass
 
 
 class MockTrace:
@@ -195,12 +297,17 @@ class MockTrace:
         db_session=None
     ):
         self.id = trace_id
+        self.trace_id = trace_id
         self.name = name
         self.tags = tags or []
         self.metadata = metadata or {}
         self.db_session = db_session
         self.spans = []
         self.scores = []
+
+    def record_child_span(self, name, input_data=None, latency_ms=None, error=None, output_data=None):
+        """Record a child span (no-op in mock)."""
+        self.spans.append({"name": name, "latency_ms": latency_ms, "error": error})
 
     def span(self, name: str, input: Optional[Dict] = None):
         """Create a mock span."""
@@ -224,7 +331,7 @@ class MockSpan:
         self.status = None
         self.start_time = time.time()
 
-    def end(self, output: Optional[Dict] = None, status_message: str = "success"):
+    def end(self, output: Optional[Dict] = None, status_message: str = "success", **kwargs):
         """End the span."""
         self.output = output
         self.status = status_message

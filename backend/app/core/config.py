@@ -8,17 +8,17 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Application
-    APP_NAME: str = "SaaS CS QA Studio"
+    APP_NAME: str = "QA Studio"
     DEBUG: bool = True
     API_PREFIX: str = "/api/v1"
 
     # Database
-    DATABASE_URL: str = "sqlite:///./cs_qa_studio.db"
+    DATABASE_URL: str = "sqlite:///./qa_studio.db"
 
     # Langfuse (optional - graceful fallback if not set)
     LANGFUSE_PUBLIC_KEY: Optional[str] = None
     LANGFUSE_SECRET_KEY: Optional[str] = None
-    LANGFUSE_HOST: str = "https://cloud.langfuse.com"
+    LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"
 
     # LLM Provider
     OPENAI_API_KEY: Optional[str] = None
