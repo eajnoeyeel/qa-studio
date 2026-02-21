@@ -72,8 +72,8 @@ export default function ExperimentDetailPage() {
 
               <div className="stats-grid" style={{ marginTop: 16 }}>
                 <div className="stat-card">
-                  <div className="stat-value">{summary.total_tickets}</div>
-                  <div className="stat-label">Total Tickets</div>
+                  <div className="stat-value">{summary.total_items}</div>
+                  <div className="stat-label">Total Items</div>
                 </div>
                 <div className="stat-card">
                   <div className="stat-value">{summary.human_queue_count}</div>
@@ -179,10 +179,10 @@ export default function ExperimentDetailPage() {
                 </div>
               )}
 
-              {/* Actionability Distribution */}
+              {/* Completeness Distribution */}
               <div className="grid grid-2" style={{ marginTop: 24 }}>
                 <div>
-                  <h3 style={{ marginBottom: 12 }}>Actionability Distribution (A)</h3>
+                  <h3 style={{ marginBottom: 12 }}>Completeness Distribution (A)</h3>
                   <div style={{ display: 'flex', gap: 8 }}>
                     {[1, 2, 3, 4, 5].map(score => (
                       <div key={score} style={{ flex: 1, textAlign: 'center' }}>
@@ -190,14 +190,14 @@ export default function ExperimentDetailPage() {
                           {score}
                         </div>
                         <div style={{ marginTop: 4 }}>
-                          {summary.actionability_distribution_a[score] || 0}
+                          {summary.completeness_distribution_a[score] || 0}
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
                 <div>
-                  <h3 style={{ marginBottom: 12 }}>Actionability Distribution (B)</h3>
+                  <h3 style={{ marginBottom: 12 }}>Completeness Distribution (B)</h3>
                   <div style={{ display: 'flex', gap: 8 }}>
                     {[1, 2, 3, 4, 5].map(score => (
                       <div key={score} style={{ flex: 1, textAlign: 'center' }}>
@@ -205,7 +205,7 @@ export default function ExperimentDetailPage() {
                           {score}
                         </div>
                         <div style={{ marginTop: 4 }}>
-                          {summary.actionability_distribution_b[score] || 0}
+                          {summary.completeness_distribution_b[score] || 0}
                         </div>
                       </div>
                     ))}

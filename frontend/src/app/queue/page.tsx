@@ -67,7 +67,7 @@ export default function QueuePage() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Ticket</th>
+                  <th>Item</th>
                   <th>Reason</th>
                   <th>Priority</th>
                   <th>Created</th>
@@ -78,8 +78,8 @@ export default function QueuePage() {
                 {queue.map((item) => (
                   <tr key={item.id}>
                     <td>
-                      <Link href={`/tickets/${item.ticket_id}`}>
-                        {item.ticket_id.slice(0, 8)}
+                      <Link href={`/items/${item.item_id}`}>
+                        {item.item_id.slice(0, 8)}
                       </Link>
                     </td>
                     <td>
@@ -135,9 +135,9 @@ export default function QueuePage() {
 
               <div style={{ marginTop: 16 }}>
                 <p style={{ marginBottom: 16 }}>
-                  <strong>Ticket:</strong>{' '}
-                  <Link href={`/tickets/${selectedItem.ticket_id}`} target="_blank">
-                    {selectedItem.ticket_id}
+                  <strong>Item:</strong>{' '}
+                  <Link href={`/items/${selectedItem.item_id}`} target="_blank">
+                    {selectedItem.item_id}
                   </Link>
                 </p>
 

@@ -3,8 +3,8 @@ import NavHeader from '@/components/NavHeader';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'CS QA Studio',
-  description: 'SaaS Customer Service Quality Assessment Studio',
+  title: 'QA Studio',
+  description: 'Automated Q/A Response Quality Assessment Studio',
 };
 
 export default function RootLayout({

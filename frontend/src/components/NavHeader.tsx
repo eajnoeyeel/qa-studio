@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard' },
-  { href: '/tickets', label: 'Tickets' },
+  { href: '/items', label: 'Items' },
   { href: '/experiments', label: 'Experiments' },
   { href: '/queue', label: 'Review Queue' },
 ];
@@ -20,7 +20,7 @@ export default function NavHeader() {
 
   return (
     <header className="header">
-      <h1>CS QA Studio</h1>
+      <h1>QA Studio</h1>
       <nav className="nav">
         {NAV_ITEMS.map(({ href, label }) => (
           <Link key={href} href={href} className={isActive(href) ? 'active' : ''}>

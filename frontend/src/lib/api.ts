@@ -1,23 +1,18 @@
 /**
- * API client for CS QA Studio backend.
+ * API client for QA Evaluation Studio backend.
  */
 
 const API_BASE = '/api';
 
-export interface Message {
-  role: string;
-  content: string;
-  timestamp?: string;
-}
-
-export interface Ticket {
+export interface EvalItem {
   id: string;
   external_id?: string;
   split: string;
-  conversation: Message[];
-  candidate_response: string;
+  system_prompt?: string;
+  question: string;
+  response: string;
   metadata?: Record<string, unknown>;
-  normalized_text?: string;
+  masked_text?: string;
   created_at: string;
 }
 
@@ -48,7 +43,7 @@ export interface JudgeOutput {
 
 export interface Evaluation {
   id: string;
-  ticket_id: string;
+  item_id: string;
   prompt_version: string;
   model_version: string;
   docs_version: string;
@@ -66,7 +61,7 @@ export interface Evaluation {
 
 export interface HumanQueueItem {
   id: string;
-  ticket_id: string;
+  item_id: string;
   evaluation_id: string;
   reason: string;
   priority: number;
@@ -76,14 +71,14 @@ export interface HumanQueueItem {
 
 export interface ExperimentSummary {
   experiment_id: string;
-  total_tickets: number;
+  total_items: number;
   gate_fail_rate_a: number;
   gate_fail_rate_b: number;
   top_tag_delta: Record<string, number>;
   avg_scores_a: Record<string, number>;
   avg_scores_b: Record<string, number>;
-  actionability_distribution_a: Record<number, number>;
-  actionability_distribution_b: Record<number, number>;
+  completeness_distribution_a: Record<number, number>;
+  completeness_distribution_b: Record<number, number>;
   human_queue_count: number;
   human_queue_rate: number;
 }
@@ -118,21 +113,21 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
 }
 
 export const api = {
-  // Tickets
-  listTickets: (page = 1, pageSize = 50, split?: string) => {
+  // Items
+  listItems: (page = 1, pageSize = 50, split?: string) => {
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (split) params.append('split', split);
-    return fetchAPI<{ tickets: Ticket[]; total: number; page: number; page_size: number }>(
-      `/tickets?${params}`
+    return fetchAPI<{ items: EvalItem[]; total: number; page: number; page_size: number }>(
+      `/items?${params}`
     );
   },
 
-  getTicket: (id: string) =>
-    fetchAPI<{ ticket: Ticket; evaluations: Evaluation[] }>(`/tickets/${id}`),
+  getItem: (id: string) =>
+    fetchAPI<{ item: EvalItem; evaluations: Evaluation[] }>(`/items/${id}`),
 
   // Evaluations
-  listEvaluations: (ticketId: string) =>
-    fetchAPI<{ evaluations: Evaluation[] }>(`/evaluations?ticket_id=${ticketId}`),
+  listEvaluations: (itemId: string) =>
+    fetchAPI<{ evaluations: Evaluation[] }>(`/evaluations?item_id=${itemId}`),
 
   runEvaluation: (data: {
     dataset_split: string;

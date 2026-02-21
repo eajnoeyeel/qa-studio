@@ -3,35 +3,35 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { api, Ticket, Evaluation } from '@/lib/api';
+import { api, EvalItem, Evaluation } from '@/lib/api';
 
-export default function TicketDetailPage() {
+export default function ItemDetailPage() {
   const params = useParams();
-  const ticketId = params.id as string;
+  const itemId = params.id as string;
 
-  const [ticket, setTicket] = useState<Ticket | null>(null);
+  const [item, setItem] = useState<EvalItem | null>(null);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function loadTicket() {
+    async function loadItem() {
       try {
-        const res = await api.getTicket(ticketId);
-        setTicket(res.ticket);
+        const res = await api.getItem(itemId);
+        setItem(res.item);
         setEvaluations(res.evaluations);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load ticket');
+        setError(err instanceof Error ? err.message : 'Failed to load item');
       } finally {
         setLoading(false);
       }
     }
-    loadTicket();
-  }, [ticketId]);
+    loadItem();
+  }, [itemId]);
 
   if (loading) return <div className="loading">Loading...</div>;
   if (error) return <div className="error">{error}</div>;
-  if (!ticket) return <div className="error">Ticket not found</div>;
+  if (!item) return <div className="error">Item not found</div>;
 
   const latestEval = evaluations[0];
   const judgeOutput = latestEval?.judge_output;
@@ -39,28 +39,33 @@ export default function TicketDetailPage() {
   return (
       <main className="container">
         <div style={{ marginBottom: 16 }}>
-          <Link href="/tickets">&larr; Back to Tickets</Link>
+          <Link href="/items">&larr; Back to Items</Link>
         </div>
 
+        {/* System Prompt */}
+        {item.system_prompt && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h2>System Prompt</h2>
+            <div className="message" style={{ marginTop: 16, background: 'rgba(99, 102, 241, 0.1)', padding: 16, borderRadius: 8 }}>
+              {item.system_prompt}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-2">
-          {/* Conversation */}
+          {/* Question */}
           <div className="card">
-            <h2>Conversation</h2>
-            <div className="conversation" style={{ marginTop: 16 }}>
-              {ticket.conversation.map((msg, idx) => (
-                <div key={idx} className={`message message-${msg.role}`}>
-                  <div className="message-role">{msg.role.toUpperCase()}</div>
-                  <div>{msg.content}</div>
-                </div>
-              ))}
+            <h2>Question</h2>
+            <div className="message message-user" style={{ marginTop: 16 }}>
+              {item.question}
             </div>
           </div>
 
-          {/* Candidate Response */}
+          {/* Response */}
           <div className="card">
-            <h2>Candidate Response</h2>
+            <h2>Response</h2>
             <div className="message message-assistant" style={{ marginTop: 16 }}>
-              {ticket.candidate_response}
+              {item.response}
             </div>
 
             {latestEval?.classification && (

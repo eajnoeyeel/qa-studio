@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { api, Ticket, Experiment } from '@/lib/api';
+import { api, EvalItem, Experiment } from '@/lib/api';
 
 export default function Home() {
-  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [items, setItems] = useState<EvalItem[]>([]);
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [stats, setStats] = useState<{
     total_evaluations: number;
@@ -18,12 +18,12 @@ export default function Home() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [ticketRes, expRes, reportRes] = await Promise.all([
-          api.listTickets(1, 10),
+        const [itemRes, expRes, reportRes] = await Promise.all([
+          api.listItems(1, 10),
           api.listExperiments(),
           api.getReportSummary('dev').catch(() => null),
         ]);
-        setTickets(ticketRes.tickets);
+        setItems(itemRes.items);
         setExperiments(expRes.experiments);
         if (reportRes) setStats(reportRes);
       } catch (err) {
@@ -66,11 +66,11 @@ export default function Home() {
         )}
 
         <div className="grid grid-2">
-          {/* Recent Tickets */}
+          {/* Recent Items */}
           <div className="card">
             <div className="card-header">
-              <h2>Recent Tickets</h2>
-              <Link href="/tickets" className="btn btn-secondary">View All</Link>
+              <h2>Recent Items</h2>
+              <Link href="/items" className="btn btn-secondary">View All</Link>
             </div>
             <table className="table">
               <thead>
@@ -81,15 +81,15 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {tickets.slice(0, 5).map((ticket) => (
-                  <tr key={ticket.id}>
+                {items.slice(0, 5).map((item) => (
+                  <tr key={item.id}>
                     <td>
-                      <Link href={`/tickets/${ticket.id}`}>
-                        {ticket.external_id || ticket.id.slice(0, 8)}
+                      <Link href={`/items/${item.id}`}>
+                        {item.external_id || item.id.slice(0, 8)}
                       </Link>
                     </td>
-                    <td><span className="badge badge-info">{ticket.split}</span></td>
-                    <td>{new Date(ticket.created_at).toLocaleDateString()}</td>
+                    <td><span className="badge badge-info">{item.split}</span></td>
+                    <td>{new Date(item.created_at).toLocaleDateString()}</td>
                   </tr>
                 ))}
               </tbody>
