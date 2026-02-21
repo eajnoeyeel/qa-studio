@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SaaS CS QA Studio — automated quality assessment platform for customer service responses in SaaS collaboration tools (Notion-like). Evaluates CS agent replies through gate checks (policy safety, overclaim) and 4-dimension scoring, with RAG-based evidence retrieval, human-in-the-loop review, and A/B experimentation.
+QA Studio — automated quality assessment platform for Q/A responses. Evaluates LLM-generated answers through gate checks (factual safety, hallucination) and 4-dimension scoring (instruction_following, reasoning_quality, completeness, clarity), with RAG-based evidence retrieval, human-in-the-loop review, and A/B experimentation. Uses OpenOrca dataset format (system_prompt, question, response).
 
 ## Commands
 
@@ -27,12 +27,16 @@ npm run build     # production build
 npm run lint      # ESLint
 ```
 
-### Data Ingestion & Evaluation
+### Data Preparation & Ingestion
 ```bash
-# Ingest sample data
+# Prepare OpenOrca dataset
+cd backend
+python scripts/prepare_openorca.py
+
+# Ingest data
 curl -X POST "http://localhost:8000/api/v1/ingest/batch" \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "./sample_data/tickets_dev.jsonl", "split": "dev"}'
+  -d '{"file_path": "./sample_data/items_dev.jsonl", "split": "dev"}'
 
 # Run evaluation
 curl -X POST "http://localhost:8000/api/v1/evaluate/run" \
@@ -44,17 +48,17 @@ curl -X POST "http://localhost:8000/api/v1/evaluate/run" \
 
 **Backend** (`backend/app/`): FastAPI app with SQLite (SQLAlchemy). All routes in a single `api/routes.py`. Config via `pydantic-settings` from `.env`.
 
-**Evaluation Pipeline** (`services/pipeline.py`): Per-ticket flow: normalize → mask PII (regex) → classify (taxonomy) → RAG retrieve → judge (gates + scores) → sampling decision (human queue).
+**Evaluation Pipeline** (`services/pipeline.py`): Per-item flow: prepare → mask PII (regex) → classify (taxonomy) → RAG retrieve → judge (gates + scores) → sampling decision (human queue).
 
 **LLM Providers** (`providers/`): Strategy pattern via `factory.py`. `MockProvider` for testing (keyword-based), `OpenAIProvider` for production. Set via `LLM_PROVIDER` env var.
 
-**RAG** (`rag/`): `RAGIndexer` builds FAISS index from markdown docs in `docs/` (policies + help center). `RAGRetriever` queries the index. Mock embeddings when no OpenAI key.
+**RAG** (`rag/`): `RAGIndexer` builds FAISS index from markdown docs in `docs/` (policies, help center, rubrics). `RAGRetriever` queries the index. Mock embeddings when no OpenAI key.
 
-**Taxonomy** (`core/taxonomy.py`): 8 ticket labels (billing_seats, billing_refund, workspace_access, etc.) with required slots per label. 12 failure tags.
+**Taxonomy** (`core/taxonomy.py`): 8 Q/A task labels (reasoning, math, classification, summarization, extraction, creative_writing, coding, open_qa) with required slots per label. 12 failure tags.
 
-**Rubric** (`core/rubric.py`): 2 gates (policy_safety, overclaim) + 4 scores (understanding, info_strategy, actionability, communication, 1-5 scale). Sampling rules drive human queue routing.
+**Rubric** (`core/rubric.py`): 2 gates (factual_safety, hallucination) + 4 scores (instruction_following, reasoning_quality, completeness, clarity, 1-5 scale). Sampling rules drive human queue routing.
 
-**Frontend** (`frontend/`): Next.js 14 with pages for tickets, experiments, and human review queue. API client in `src/lib/api.ts` points to backend port 8000.
+**Frontend** (`frontend/`): Next.js 14 with pages for items, experiments, and human review queue. API client in `src/lib/api.ts` points to backend port 8000.
 
 **Instrumentation**: Langfuse tracing with graceful fallback — works fully offline without Langfuse keys.
 
@@ -62,10 +66,11 @@ curl -X POST "http://localhost:8000/api/v1/evaluate/run" \
 
 ## Key Data Files
 
-- `sample_data/tickets_dev.jsonl` — dev split
-- `sample_data/tickets_test.jsonl` — test split
-- `sample_data/tickets_ab_eval.jsonl` — A/B experiment split
+- `sample_data/items_dev.jsonl` — dev split (OpenOrca format: system_prompt, question, response)
+- `sample_data/items_test.jsonl` — test split
+- `sample_data/items_ab_eval.jsonl` — A/B experiment split
 - `docs/policies/` and `docs/help_center/` — RAG source documents (markdown with frontmatter)
+- `docs/rubrics/` — scoring rubric documents per task type
 
 ## Environment
 
