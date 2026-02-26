@@ -171,7 +171,7 @@
         "url": "http://host.docker.internal:8000/api/v1/experiment/ab",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"dataset_split\": \"ab_eval\",\n  \"docs_version\": \"v1\",\n  \"config_a\": {\n    \"prompt_version\": \"production\",\n    \"model_version\": \"mock\"\n  },\n  \"config_b\": {\n    \"prompt_version\": ('candidate-' + $('Create Proposal').item.json.id),\n    \"model_version\": \"mock\"\n  },\n  \"name\": ('AutoImprovement-AB-Test-' + $('Create Proposal').item.json.id)\n} }}",
+        "jsonBody": "={{ {\n  \"dataset_split\": \"ab_eval\",\n  \"docs_version\": \"v1\",\n  \"config_a\": {\n    \"prompt_version\": \"production\",\n    \"model_version\": ($env.LLM_MODEL || \"gpt-4o-mini\")\n  },\n  \"config_b\": {\n    \"prompt_version\": ('candidate-' + $('Create Proposal').item.json.id),\n    \"model_version\": ($env.LLM_MODEL || \"gpt-4o-mini\")\n  },\n  \"name\": ('AutoImprovement-AB-Test-' + $('Create Proposal').item.json.id)\n} }}",
         "options": {
           "timeout": 300000
         }

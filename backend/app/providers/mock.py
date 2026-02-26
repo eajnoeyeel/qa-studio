@@ -1,4 +1,5 @@
 """Mock LLM provider with deterministic rule-based responses."""
+import json
 import re
 import random
 from typing import Any, Dict, List, Optional
@@ -27,10 +28,22 @@ class MockProvider(LLMProvider):
         max_tokens: int = 2000,
         **kwargs
     ) -> LLMResponse:
-        """Mock completion - returns templated response."""
+        """Mock completion - returns JSON when the prompt requests it, plain text otherwise."""
         last_message = messages[-1].content if messages else ""
 
-        response = f"[Mock Response] Processed input of length {len(last_message)}"
+        # Detect JSON-expecting prompts (e.g. suggestion generation)
+        if "JSON" in last_message and "suggested_prompt" in last_message:
+            response = json.dumps({
+                "suggested_prompt": (
+                    "You are a QA evaluator. Evaluate the response for factual safety, "
+                    "hallucination, instruction following, reasoning quality, completeness, "
+                    "and clarity. Pay special attention to the most frequent failure patterns."
+                ),
+                "rationale": "Mock suggestion: added emphasis on frequent failure patterns.",
+                "expected_improvement": "Reduce top failure tags by ~10% (mock estimate).",
+            })
+        else:
+            response = f"[Mock Response] Processed input of length {len(last_message)}"
 
         return LLMResponse(
             content=response,
@@ -128,9 +141,20 @@ class MockProvider(LLMProvider):
         prompt_label: str = "production",
         model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Rule-based evaluation for Q/A responses."""
+        """Rule-based evaluation for Q/A responses.
+
+        prompt_label and model influence scores so that A/B experiments
+        produce meaningful (non-identical) results in mock mode.
+        """
         response_lower = response.lower()
         question_lower = question.lower()
+
+        # Version-aware bias: different prompt_label / model combos shift
+        # scores by a small deterministic offset so A/B comparisons show a
+        # real delta instead of always returning the same numbers.
+        import hashlib
+        version_seed = int(hashlib.sha256(f"{prompt_label}:{model or 'default'}".encode()).hexdigest(), 16) % 7
+        _version_bias = (version_seed - 3) * 0.25  # range ~ -0.75 .. +0.75
 
         # === GATES ===
         gates = []
@@ -198,6 +222,7 @@ class MockProvider(LLMProvider):
             if_score -= 2
         if_score = max(1, min(5, if_score))
 
+        if_score = max(1, min(5, round(if_score + _version_bias)))
         scores.append({
             "score_type": ScoreType.INSTRUCTION_FOLLOWING.value,
             "score": if_score,
@@ -215,9 +240,10 @@ class MockProvider(LLMProvider):
         if reasoning_count == 0 and len(response_lower) > 100:
             rq_score -= 1
 
+        rq_score = max(1, min(5, round(rq_score + _version_bias)))
         scores.append({
             "score_type": ScoreType.REASONING_QUALITY.value,
-            "score": max(1, min(5, rq_score)),
+            "score": rq_score,
             "justification": f"Response contains {reasoning_count} reasoning indicators",
         })
 
@@ -235,9 +261,10 @@ class MockProvider(LLMProvider):
         if any(p in response_lower for p in ["step 1", "first,", "1.", "- "]):
             comp_score += 1
 
+        comp_score = max(1, min(5, round(comp_score + _version_bias)))
         scores.append({
             "score_type": ScoreType.COMPLETENESS.value,
-            "score": max(1, min(5, comp_score)),
+            "score": comp_score,
             "justification": f"Response length: {len(response)} chars, {'structured' if comp_score >= 4 else 'basic'} format",
         })
 
@@ -254,9 +281,10 @@ class MockProvider(LLMProvider):
         if any(p in response_lower for p in ["in other words", "to clarify", "specifically"]):
             clarity_score += 1
 
+        clarity_score = max(1, min(5, round(clarity_score + _version_bias)))
         scores.append({
             "score_type": ScoreType.CLARITY.value,
-            "score": max(1, min(5, clarity_score)),
+            "score": clarity_score,
             "justification": f"Average sentence length: {avg_sentence_len:.0f} words",
         })
 

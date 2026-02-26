@@ -11,7 +11,8 @@ from ..core.config import get_settings
 from ..models.schemas import (
     IngestRequest, IngestResponse, EvaluateRunRequest, EvaluateRunResponse,
     ABExperimentRequest, ABExperimentResponse, EvalItemCreate, EvalItemInDB,
-    EvalItemListResponse, EvaluationInDB, HumanReviewCreate, HumanReviewInDB,
+    EvalItemListResponse, ScenarioItemsResponse,
+    EvaluationInDB, HumanReviewCreate, HumanReviewInDB,
     HumanQueueItem, ReportSummaryResponse, ExperimentInDB, DatasetSplit,
     DocumentMeta,
     # Phase 2: Pattern Analysis
@@ -42,6 +43,16 @@ from ..services.approval_workflow import ApprovalWorkflow
 
 router = APIRouter()
 settings = get_settings()
+
+
+def _validate_model_version(model_version: str) -> None:
+    """Reject 'mock' model_version when using a real LLM provider."""
+    if settings.LLM_PROVIDER != "mock" and model_version == "mock":
+        raise HTTPException(
+            status_code=422,
+            detail=f"model_version='mock' is invalid when LLM_PROVIDER='{settings.LLM_PROVIDER}'. "
+                   f"Use a real model id (e.g. 'gpt-4o-mini').",
+        )
 
 # Initialize database
 engine, SessionLocal = init_db(settings.DATABASE_URL)
@@ -124,10 +135,19 @@ async def _parse_and_ingest(
         try:
             data = json.loads(line)
 
-            # OpenOrca format: system_prompt, question, response
+            # Supports standard Q/A, UltraFeedback, and legacy ticket formats
             system_prompt = data.get("system_prompt", data.get("system", ""))
             question = data.get("question", data.get("instruction", data.get("query", "")))
             response = data.get("response", data.get("output", data.get("answer", "")))
+
+            # Legacy ticket format: conversation[0].content → question,
+            # candidate_response → response
+            if not question and "conversation" in data:
+                conv = data["conversation"]
+                if isinstance(conv, list) and conv:
+                    question = conv[0].get("content", "") if isinstance(conv[0], dict) else str(conv[0])
+            if not response and "candidate_response" in data:
+                response = data["candidate_response"]
 
             if not question or not response:
                 errors.append(f"Line {i+1}: Missing question or response field")
@@ -139,6 +159,8 @@ async def _parse_and_ingest(
                 question=question,
                 response=response,
                 metadata=data.get("metadata"),
+                scenario_id=data.get("scenario_id"),
+                candidate_source=data.get("candidate_source"),
                 split=split,
             )
             items_to_create.append(item)
@@ -213,6 +235,15 @@ async def evaluate_run(
     instrumentation: LangfuseInstrumentation = Depends(get_instrumentation)
 ):
     """Run evaluation on items."""
+    _validate_model_version(request.model_version)
+
+    # Cost safety: require explicit limit or item_ids when using a real provider
+    if settings.LLM_PROVIDER != "mock" and not request.item_ids and not request.limit:
+        raise HTTPException(
+            status_code=422,
+            detail="'limit' or 'item_ids' is required when LLM_PROVIDER is not 'mock' to prevent runaway API costs.",
+        )
+
     item_repo = EvalItemRepository(db)
     retriever = get_rag_retriever()
 
@@ -232,12 +263,23 @@ async def evaluate_run(
         db_session=db,
     )
 
-    # Get items
+    # Get items — respect explicit limit, otherwise process all items in the split
+    eval_repo = EvaluationRepository(db)
     if request.item_ids:
         items = [i for iid in request.item_ids if (i := item_repo.get(iid))]
     else:
-        page_size = request.limit or 1000
-        items, _ = item_repo.get_all(split=request.dataset_split, page=1, page_size=page_size)
+        # First get total count, then fetch up to limit (or all)
+        _, total = item_repo.get_all(split=request.dataset_split, page=1, page_size=1)
+        fetch_size = min(request.limit, total) if request.limit else total
+        items, _ = item_repo.get_all(split=request.dataset_split, page=1, page_size=max(fetch_size, 1))
+
+    # Skip items that already have an evaluation for this version triple
+    already_evaluated = eval_repo.get_evaluated_item_ids(
+        prompt_version=request.prompt_version,
+        model_version=request.model_version,
+        docs_version=request.docs_version,
+    )
+    items = [item for item in items if item.id not in already_evaluated]
 
     # Process items
     results = []
@@ -289,6 +331,9 @@ async def run_ab_experiment(
     instrumentation: LangfuseInstrumentation = Depends(get_instrumentation)
 ):
     """Run A/B experiment."""
+    _validate_model_version(request.config_a.model_version)
+    _validate_model_version(request.config_b.model_version)
+
     retriever = get_rag_retriever()
 
     # Get providers (can be same or different)
@@ -349,13 +394,21 @@ async def run_ab_experiment(
 @router.get("/items", response_model=EvalItemListResponse)
 async def list_items(
     split: Optional[DatasetSplit] = None,
+    scenario_id: Optional[str] = None,
+    candidate_source: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
-    """List eval items with pagination."""
+    """List eval items with pagination and optional filters."""
     repo = EvalItemRepository(db)
-    items, total = repo.get_all(split=split, page=page, page_size=page_size)
+    items, total = repo.get_all(
+        split=split,
+        scenario_id=scenario_id,
+        candidate_source=candidate_source,
+        page=page,
+        page_size=page_size,
+    )
 
     return EvalItemListResponse(
         items=items,
@@ -363,6 +416,17 @@ async def list_items(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/items/scenario/{scenario_id}", response_model=ScenarioItemsResponse)
+async def get_items_by_scenario(
+    scenario_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get all candidate items for a scenario."""
+    repo = EvalItemRepository(db)
+    items = repo.get_by_scenario(scenario_id)
+    return ScenarioItemsResponse(scenario_id=scenario_id, items=items, count=len(items))
 
 
 @router.get("/items/{item_id}")
@@ -468,52 +532,20 @@ async def get_report_summary(
     db: Session = Depends(get_db)
 ):
     """Get summary report for evaluations."""
-    eval_repo = EvaluationRepository(db)
-    judge_repo = JudgeOutputRepository(db)
-    queue_repo = HumanQueueRepository(db)
     item_repo = EvalItemRepository(db)
+    queue_repo = HumanQueueRepository(db)
 
-    # Get items in split
-    items, total = item_repo.get_all(split=dataset_split, page=1, page_size=10000)
-
-    # Collect stats
-    total_evals = 0
-    gate_fails = 0
-    score_sums = defaultdict(float)
-    score_counts = defaultdict(int)
-    tag_counts = defaultdict(int)
-
-    for item in items:
-        evals = eval_repo.get_by_item(item.id)
-        for eval in evals:
-            total_evals += 1
-            judge = judge_repo.get_by_evaluation(eval.id)
-            if judge:
-                if not all(getattr(g, "passed", True) if not isinstance(g, dict) else g.get("passed", True) for g in judge.gates):
-                    gate_fails += 1
-                for score in judge.scores:
-                    if isinstance(score, dict):
-                        st, sv = score.get("score_type", ""), score.get("score", 0)
-                    else:
-                        st, sv = score.score_type, score.score
-                    score_sums[st] += sv
-                    score_counts[st] += 1
-                for tag in judge.failure_tags:
-                    tag_counts[tag] += 1
-
-    # Calculate averages
-    avg_scores = {k: score_sums[k] / score_counts[k] for k in score_sums if score_counts[k] > 0}
-
-    # Queue stats
+    stats = item_repo.get_summary_stats(dataset_split)
+    total_evals = stats["total_evaluations"]
     pending_count = queue_repo.count_pending()
 
     return ReportSummaryResponse(
         dataset_split=dataset_split,
         date_range=f"{start_date} to {end_date}" if start_date else None,
         total_evaluations=total_evals,
-        gate_fail_rate=gate_fails / total_evals if total_evals > 0 else 0,
-        avg_scores=avg_scores,
-        tag_distribution=dict(sorted(tag_counts.items(), key=lambda x: -x[1])),
+        gate_fail_rate=stats["gate_fail_count"] / total_evals if total_evals > 0 else 0,
+        avg_scores=stats.get("avg_scores", {}),
+        tag_distribution=dict(sorted(stats.get("tag_counts", {}).items(), key=lambda x: -x[1])),
         human_queue_stats={"pending": pending_count},
     )
 

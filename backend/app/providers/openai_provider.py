@@ -103,6 +103,7 @@ JSON Response:"""
         response = await self.complete(
             [LLMMessage(role="user", content=prompt)],
             model=model,
+            response_format={"type": "json_object"},
         )
 
         try:
@@ -202,6 +203,7 @@ JSON Response:"""
         llm_response = await self.complete(
             [LLMMessage(role="user", content=prompt)],
             model=model,
+            response_format={"type": "json_object"},
         )
 
         try:
