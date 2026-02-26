@@ -56,12 +56,13 @@ class ExperimentService:
             sampling_config=sampling_config,
         ))
 
-        # Get items
+        # Get items — fetch all items in the split (no silent cap)
         item_repo = EvalItemRepository(self.db_session)
         if item_ids:
             items = [i for iid in item_ids if (i := item_repo.get(iid))]
         else:
-            items, _ = item_repo.get_all(split=dataset_split, page=1, page_size=1000)
+            _, total = item_repo.get_all(split=dataset_split, page=1, page_size=1)
+            items, _ = item_repo.get_all(split=dataset_split, page=1, page_size=max(total, 1))
 
         logger.info(f"Running experiment {experiment.id} on {len(items)} items")
 
