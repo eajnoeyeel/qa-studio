@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 class EvaluationPipeline:
     """Main evaluation pipeline orchestrating all steps."""
 
+    # Process-level set so novel-tag tracking persists across pipeline instances
+    # and isn't reset on every request (which would re-trigger novelty routing).
+    _global_seen_tags: Set[str] = set()
+
     def __init__(
         self,
         provider: LLMProvider,
@@ -33,7 +37,7 @@ class EvaluationPipeline:
         self.retriever = retriever
         self.instrumentation = instrumentation
         self.db_session = db_session
-        self.seen_tags: Set[str] = set()
+        self.seen_tags = self._global_seen_tags
 
     async def process_item(
         self,
@@ -97,10 +101,15 @@ class EvaluationPipeline:
                 model_version=model_version,
             )
 
+            # Extract masked question/response for downstream steps
+            # so PII-masked text is used for RAG and judge, not raw input
+            masked_question = await self._mask_pii(item.question, trace)
+            masked_response = await self._mask_pii(item.response, trace)
+
             # Step 4: RAG Retrieve
             rag_result = await self._rag_retrieve(
-                item.question,
-                item.response,
+                masked_question,
+                masked_response,
                 classification.label,
                 docs_version,
                 trace
@@ -108,8 +117,8 @@ class EvaluationPipeline:
 
             # Step 5: Judge (evaluate)
             judge_output = await self._judge(
-                item.question,
-                item.response,
+                masked_question,
+                masked_response,
                 rag_result,
                 trace,
                 system_prompt=item.system_prompt,
