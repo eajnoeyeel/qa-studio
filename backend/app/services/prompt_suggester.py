@@ -146,16 +146,23 @@ class PromptSuggester:
         """Fetch the latest pattern analysis result from DB."""
         try:
             from ..db.repository import FailurePatternRepository
+            from ..models.database import EvaluationModel
+            from sqlalchemy import func
+
             repo = FailurePatternRepository(self.db)
             patterns = repo.get_latest(top_k)
             if not patterns:
                 return None
             run_id = repo.get_latest_run_id()
+
+            # Get actual evaluation count so the meta-prompt is accurate
+            total_evals = self.db.query(func.count(EvaluationModel.id)).scalar() or 0
+
             return PatternAnalysisResult(
                 analysis_run_id=run_id or "unknown",
                 patterns_found=len(patterns),
                 top_patterns=patterns,
-                total_evaluations_analyzed=0,
+                total_evaluations_analyzed=total_evals,
             )
         except Exception as e:
             logger.warning(f"Failed to fetch latest patterns: {e}")
