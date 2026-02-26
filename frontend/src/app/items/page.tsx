@@ -55,6 +55,7 @@ export default function ItemsPage() {
                   <tr>
                     <th>ID</th>
                     <th>Split</th>
+                    <th>Source</th>
                     <th>Question Preview</th>
                     <th>Response Preview</th>
                     <th>Created</th>
@@ -65,10 +66,19 @@ export default function ItemsPage() {
                     <tr key={item.id}>
                       <td>
                         <Link href={`/items/${item.id}`}>
-                          {item.external_id || item.id.slice(0, 8)}
+                          {item.external_id || item.scenario_id?.slice(0, 12) || item.id.slice(0, 8)}
                         </Link>
                       </td>
                       <td><span className="badge badge-info">{item.split}</span></td>
+                      <td>
+                        {item.candidate_source ? (
+                          <span className="badge" style={{ background: 'var(--accent-secondary, #6c5ce7)', color: '#fff', fontSize: '0.75rem' }}>
+                            {item.candidate_source}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-secondary, #999)' }}>—</span>
+                        )}
+                      </td>
                       <td style={{ maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {item.question.slice(0, 80)}...
                       </td>

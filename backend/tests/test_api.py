@@ -1,4 +1,8 @@
 """Tests for API endpoints."""
+import json
+import tempfile
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -174,3 +178,98 @@ def test_submit_human_review_returns_typed_gold_fields(client):
     assert data["gold_gates"] == {"hallucination": True}
     assert data["gold_scores"] == {"clarity": 4}
     assert data["gold_tags"] == ["off_topic"]
+
+
+def test_ingest_with_scenario_and_candidate_source(client):
+    """Test that scenario_id and candidate_source persist through ingest and return."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        item = item_repo.create(
+            EvalItemCreate(
+                external_id="uf_test_0_modelA",
+                split="dev",
+                question="What is gravity?",
+                response="Gravity is a force.",
+                scenario_id="uf_test_0",
+                candidate_source="alpaca-7b",
+            ),
+            commit=True,
+        )
+    finally:
+        db.close()
+
+    response = client.get(f"/api/v1/items/{item.id}")
+    assert response.status_code == 200
+    data = response.json()["item"]
+    assert data["scenario_id"] == "uf_test_0"
+    assert data["candidate_source"] == "alpaca-7b"
+
+
+def test_list_items_filter_by_scenario_id(client):
+    """Test that GET /items?scenario_id=X filters correctly."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        for model in ["model-a", "model-b"]:
+            item_repo.create(
+                EvalItemCreate(
+                    external_id=f"uf_filter_{model}",
+                    split="dev",
+                    question="Explain photosynthesis.",
+                    response=f"Response from {model}.",
+                    scenario_id="uf_filter_scenario",
+                    candidate_source=model,
+                ),
+                commit=True,
+            )
+        # Unrelated item with different scenario
+        item_repo.create(
+            EvalItemCreate(
+                external_id="uf_other",
+                split="dev",
+                question="Other question.",
+                response="Other response.",
+                scenario_id="uf_other_scenario",
+                candidate_source="model-c",
+            ),
+            commit=True,
+        )
+    finally:
+        db.close()
+
+    response = client.get("/api/v1/items?scenario_id=uf_filter_scenario")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    sources = {item["candidate_source"] for item in data["items"]}
+    assert sources == {"model-a", "model-b"}
+
+
+def test_get_items_by_scenario_endpoint(client):
+    """Test GET /items/scenario/{id} returns all candidates for that scenario."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        for i, model in enumerate(["gpt4", "llama", "falcon", "vicuna"]):
+            item_repo.create(
+                EvalItemCreate(
+                    external_id=f"uf_scenario_ep_{model}",
+                    split="dev",
+                    question="What is AI?",
+                    response=f"AI answer from {model}.",
+                    scenario_id="uf_scenario_ep_test",
+                    candidate_source=model,
+                ),
+                commit=True,
+            )
+    finally:
+        db.close()
+
+    response = client.get("/api/v1/items/scenario/uf_scenario_ep_test")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["scenario_id"] == "uf_scenario_ep_test"
+    assert data["count"] == 4
+    sources = {item["candidate_source"] for item in data["items"]}
+    assert sources == {"gpt4", "llama", "falcon", "vicuna"}

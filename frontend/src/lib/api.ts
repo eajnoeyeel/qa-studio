@@ -12,6 +12,8 @@ export interface EvalItem {
   question: string;
   response: string;
   metadata?: Record<string, unknown>;
+  scenario_id?: string;
+  candidate_source?: string;
   masked_text?: string;
   created_at: string;
 }

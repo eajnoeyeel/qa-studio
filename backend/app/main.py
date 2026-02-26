@@ -28,10 +28,36 @@ app.add_middleware(
 app.include_router(router, prefix=settings.API_PREFIX)
 
 
+def _run_migrations():
+    """Apply lightweight schema migrations for new columns on existing DBs."""
+    from sqlalchemy import create_engine, inspect, text
+    engine = create_engine(
+        settings.DATABASE_URL,
+        connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
+    )
+    inspector = inspect(engine)
+    existing = {c["name"] for c in inspector.get_columns("eval_items")}
+    migrations = [
+        ("scenario_id", "VARCHAR"),
+        ("candidate_source", "VARCHAR"),
+    ]
+    with engine.begin() as conn:
+        for col_name, col_type in migrations:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE eval_items ADD COLUMN {col_name} {col_type}"))
+                conn.execute(text(
+                    f"CREATE INDEX IF NOT EXISTS ix_eval_items_{col_name} ON eval_items({col_name})"
+                ))
+    engine.dispose()
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
     from .rag.indexer import RAGIndexer
+
+    # Apply any pending schema migrations
+    _run_migrations()
 
     # Build RAG index if not exists
     use_mock = settings.LLM_PROVIDER == "mock" or not settings.OPENAI_API_KEY

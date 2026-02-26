@@ -30,6 +30,8 @@ class EvalItemBase(BaseModel):
     question: str = Field(..., description="The question or instruction")
     response: str = Field(..., description="The response to evaluate")
     metadata: Optional[Dict[str, Any]] = None
+    scenario_id: Optional[str] = None
+    candidate_source: Optional[str] = None
 
 
 class EvalItemCreate(EvalItemBase):
@@ -54,6 +56,13 @@ class EvalItemListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ScenarioItemsResponse(BaseModel):
+    """Response for scenario items."""
+    scenario_id: str
+    items: List[EvalItemInDB]
+    count: int
 
 
 # ============== Classification ==============

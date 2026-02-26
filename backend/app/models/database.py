@@ -43,6 +43,8 @@ class EvalItemModel(Base):
     question = Column(Text, nullable=False)
     response = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=True)  # JSON
+    scenario_id = Column(String, nullable=True, index=True)
+    candidate_source = Column(String, nullable=True, index=True)
     masked_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
