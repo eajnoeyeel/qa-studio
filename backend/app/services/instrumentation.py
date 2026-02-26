@@ -113,7 +113,7 @@ class LangfuseInstrumentation:
         if hasattr(trace, 'record_child_span'):
             trace.record_child_span(name, input_data, latency_ms, error, output_data)
 
-        self._log_span(trace, name, input_data, latency_ms, error)
+        self._log_span(trace, name, input_data, latency_ms, error, output_data=output_data)
 
     def record_score(
         self,
@@ -145,7 +145,8 @@ class LangfuseInstrumentation:
         name: str,
         input_data: Optional[Dict[str, Any]],
         latency_ms: Optional[float],
-        error: Optional[str]
+        error: Optional[str],
+        output_data: Optional[Dict[str, Any]] = None,
     ):
         """Log span to local storage."""
         trace_id = getattr(trace, 'trace_id', getattr(trace, 'id', str(trace)))
@@ -162,6 +163,7 @@ class LangfuseInstrumentation:
                     trace_id=trace_id,
                     span_name=name,
                     input_data=input_data,
+                    output_data=output_data,
                     latency_ms=latency_ms,
                     error=error,
                     # Avoid breaking caller transaction atomicity by committing only
@@ -242,9 +244,11 @@ class LangfuseTraceWrapper:
         self.metadata = metadata or {}
 
     def record_child_span(self, name, input_data=None, latency_ms=None, error=None, output_data=None):
-        """Record a child span under this trace."""
+        """Record a child span linked to the root span of this trace."""
         try:
-            child = self.langfuse.start_span(
+            # Create child on root_span so it appears nested under the trace,
+            # not as an orphan top-level span.
+            child = self.root_span.start_span(
                 name=name,
                 input=input_data,
             )
@@ -258,9 +262,9 @@ class LangfuseTraceWrapper:
             logger.error(f"Failed to record Langfuse child span: {e}")
 
     def span(self, name: str, input: Optional[Dict] = None):
-        """Create a child span (compatibility method)."""
+        """Create a child span linked to root (compatibility method)."""
         try:
-            return self.langfuse.start_span(name=name, input=input)
+            return self.root_span.start_span(name=name, input=input)
         except Exception:
             return MockSpan(name, input)
 
