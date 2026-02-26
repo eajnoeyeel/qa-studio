@@ -76,12 +76,18 @@ class EvalItemRepository:
     def get_all(
         self,
         split: Optional[DatasetSplit] = None,
+        scenario_id: Optional[str] = None,
+        candidate_source: Optional[str] = None,
         page: int = 1,
         page_size: int = 50
     ) -> tuple[List[EvalItemInDB], int]:
         query = self.db.query(EvalItemModel)
         if split:
             query = query.filter(EvalItemModel.split == split)
+        if scenario_id:
+            query = query.filter(EvalItemModel.scenario_id == scenario_id)
+        if candidate_source:
+            query = query.filter(EvalItemModel.candidate_source == candidate_source)
 
         total = query.count()
         models = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -100,6 +106,8 @@ class EvalItemRepository:
             question=item.question,
             response=item.response,
             metadata_json=json_serializer(item.metadata) if item.metadata else None,
+            scenario_id=item.scenario_id,
+            candidate_source=item.candidate_source,
         )
         self.db.add(model)
         if commit:
@@ -107,10 +115,25 @@ class EvalItemRepository:
             self.db.refresh(model)
         return self._to_schema(model)
 
-    def create_batch(self, items: List[EvalItemCreate]) -> int:
-        """Batch create eval items in a single transaction."""
+    def create_batch(self, items: List[EvalItemCreate], skip_duplicates: bool = True) -> int:
+        """Batch create eval items in a single transaction.
+
+        When skip_duplicates=True, items with an external_id that already exists
+        in the database are silently skipped.
+        """
+        existing_ids: set = set()
+        if skip_duplicates:
+            ext_ids = [i.external_id for i in items if i.external_id]
+            if ext_ids:
+                rows = self.db.query(EvalItemModel.external_id).filter(
+                    EvalItemModel.external_id.in_(ext_ids)
+                ).all()
+                existing_ids = {r[0] for r in rows}
+
         models = []
         for item in items:
+            if skip_duplicates and item.external_id and item.external_id in existing_ids:
+                continue
             model = EvalItemModel(
                 id=generate_id(),
                 external_id=item.external_id,
@@ -119,10 +142,13 @@ class EvalItemRepository:
                 question=item.question,
                 response=item.response,
                 metadata_json=json_serializer(item.metadata) if item.metadata else None,
+                scenario_id=item.scenario_id,
+                candidate_source=item.candidate_source,
             )
             models.append(model)
-        self.db.add_all(models)
-        self.db.commit()
+        if models:
+            self.db.add_all(models)
+            self.db.commit()
         return len(models)
 
     def flush(self):
@@ -139,6 +165,13 @@ class EvalItemRepository:
             self.db.refresh(model)
         return self._to_schema(model)
 
+    def get_by_scenario(self, scenario_id: str) -> List[EvalItemInDB]:
+        """Get all candidate items for a given scenario."""
+        models = self.db.query(EvalItemModel).filter(
+            EvalItemModel.scenario_id == scenario_id
+        ).all()
+        return [self._to_schema(m) for m in models]
+
     def _to_schema(self, model: EvalItemModel) -> EvalItemInDB:
         return EvalItemInDB(
             id=model.id,
@@ -148,9 +181,71 @@ class EvalItemRepository:
             question=model.question,
             response=model.response,
             metadata=model.item_metadata,
+            scenario_id=model.scenario_id,
+            candidate_source=model.candidate_source,
             masked_text=model.masked_text,
             created_at=model.created_at,
         )
+
+
+    def get_summary_stats(self, split: DatasetSplit) -> Dict:
+        """Get aggregated evaluation stats for a split using JOINed queries."""
+        from sqlalchemy import func
+        from ..models.database import EvaluationModel, JudgeOutputModel
+
+        # Total evaluations for this split
+        total_evals = self.db.query(func.count(EvaluationModel.id)).join(
+            EvalItemModel, EvalItemModel.id == EvaluationModel.item_id
+        ).filter(EvalItemModel.split == split).scalar() or 0
+
+        if total_evals == 0:
+            return {
+                "total_evaluations": 0,
+                "gate_fail_count": 0,
+                "scores_raw": [],
+                "tags_raw": [],
+            }
+
+        # Get all judge outputs for this split in one query
+        judge_rows = self.db.query(
+            JudgeOutputModel.gates_json,
+            JudgeOutputModel.scores_json,
+            JudgeOutputModel.failure_tags_json,
+        ).join(
+            EvaluationModel, EvaluationModel.id == JudgeOutputModel.evaluation_id
+        ).join(
+            EvalItemModel, EvalItemModel.id == EvaluationModel.item_id
+        ).filter(EvalItemModel.split == split).all()
+
+        from ..models.database import json_deserializer
+        gate_fails = 0
+        score_sums: Dict[str, float] = {}
+        score_counts: Dict[str, int] = {}
+        tag_counts: Dict[str, int] = {}
+
+        for gates_json, scores_json, tags_json in judge_rows:
+            gates = json_deserializer(gates_json) or []
+            scores = json_deserializer(scores_json) or []
+            tags = json_deserializer(tags_json) or []
+
+            if not all(g.get("passed", True) for g in gates):
+                gate_fails += 1
+            for s in scores:
+                st = s.get("score_type", "")
+                sv = s.get("score", 0)
+                score_sums[st] = score_sums.get(st, 0) + sv
+                score_counts[st] = score_counts.get(st, 0) + 1
+            for tag in tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        avg_scores = {k: score_sums[k] / score_counts[k] for k in score_sums if score_counts[k] > 0}
+
+        return {
+            "total_evaluations": total_evals,
+            "gate_fail_count": gate_fails,
+            "avg_scores": avg_scores,
+            "tag_counts": tag_counts,
+        }
 
 
 class EvaluationRepository:
@@ -183,6 +278,20 @@ class EvaluationRepository:
             EvaluationModel.docs_version == docs_version
         ).all()
         return [self._to_schema(m) for m in models]
+
+    def get_evaluated_item_ids(
+        self,
+        prompt_version: str,
+        model_version: str,
+        docs_version: str,
+    ) -> set:
+        """Return set of item_ids that already have an evaluation for this version triple."""
+        rows = self.db.query(EvaluationModel.item_id).filter(
+            EvaluationModel.prompt_version == prompt_version,
+            EvaluationModel.model_version == model_version,
+            EvaluationModel.docs_version == docs_version,
+        ).all()
+        return {r[0] for r in rows}
 
     def create(self, evaluation: EvaluationCreate, trace_id: Optional[str] = None, commit: bool = True) -> EvaluationInDB:
         model = EvaluationModel(
