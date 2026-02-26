@@ -112,10 +112,8 @@ class TestPatternAnalyzerAnalyze:
 
     @pytest.mark.asyncio
     async def test_analyze_empty_returns_empty_result(self):
-        self.db.query.return_value.filter.return_value.filter.return_value.all.return_value = []
-        self.db.query.return_value.all.return_value = []
-
-        # Mock the query chain for no version filters
+        # The new query path uses subquery + join; MagicMock auto-chains
+        # .group_by().subquery(), .join(), .filter(), .all()
         mock_query = MagicMock()
         mock_query.all.return_value = []
         self.db.query.return_value = mock_query
@@ -133,10 +131,21 @@ class TestPatternAnalyzerAnalyze:
             _make_eval_model(f"e{i}", ["hallucination", "logic_error"], {})
             for i in range(3)
         ]
+        for i, e in enumerate(evals):
+            e.item_id = f"item_{i}"
+            e.created_at = datetime(2025, 1, 1, i)
 
-        mock_query = MagicMock()
-        mock_query.all.return_value = evals
-        self.db.query.return_value = mock_query
+        # db.query() is called twice: once for the subquery (max created_at),
+        # once for the main join query.  Use side_effect to return different
+        # mock chains for each call.
+        subq_mock = MagicMock()  # first call: subquery builder
+        main_mock = MagicMock()  # second call: main query
+        main_mock.all.return_value = evals
+        # Any further chaining (.join, .filter) should resolve to main_mock
+        main_mock.join.return_value = main_mock
+        main_mock.filter.return_value = main_mock
+
+        self.db.query.side_effect = [subq_mock, main_mock]
 
         # Mock FailurePatternRepository
         with patch("app.services.pattern_analyzer.FailurePatternRepository") as MockRepo:

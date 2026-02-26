@@ -35,8 +35,25 @@ class PatternAnalyzer:
         """
         analysis_run_id = str(uuid.uuid4())
 
-        # Query evaluations with optional version filters
-        query = self.db.query(EvaluationModel)
+        # Query evaluations with optional version filters.
+        # Use only the latest evaluation per item to avoid distortion
+        # from repeated runs inflating pattern counts.
+        from sqlalchemy import func
+        latest_subq = self.db.query(
+            EvaluationModel.item_id,
+            func.max(EvaluationModel.created_at).label("max_created"),
+        )
+        if prompt_version:
+            latest_subq = latest_subq.filter(EvaluationModel.prompt_version == prompt_version)
+        if model_version:
+            latest_subq = latest_subq.filter(EvaluationModel.model_version == model_version)
+        latest_subq = latest_subq.group_by(EvaluationModel.item_id).subquery()
+
+        query = self.db.query(EvaluationModel).join(
+            latest_subq,
+            (EvaluationModel.item_id == latest_subq.c.item_id)
+            & (EvaluationModel.created_at == latest_subq.c.max_created),
+        )
         if prompt_version:
             query = query.filter(EvaluationModel.prompt_version == prompt_version)
         if model_version:
