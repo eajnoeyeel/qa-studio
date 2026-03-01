@@ -537,8 +537,6 @@ async def submit_human_review(
 @router.get("/reports/summary", response_model=ReportSummaryResponse)
 async def get_report_summary(
     dataset_split: DatasetSplit,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Get summary report for evaluations."""
@@ -551,7 +549,6 @@ async def get_report_summary(
 
     return ReportSummaryResponse(
         dataset_split=dataset_split,
-        date_range=f"{start_date} to {end_date}" if start_date else None,
         total_evaluations=total_evals,
         gate_fail_rate=stats["gate_fail_count"] / total_evals if total_evals > 0 else 0,
         avg_scores=stats.get("avg_scores", {}),
