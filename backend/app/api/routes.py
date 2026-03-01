@@ -764,13 +764,16 @@ async def run_multi_comparison(
     instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
 ):
     """Run N-way config comparison across a dataset split."""
+    for cfg in request.configs:
+        _validate_model_version(cfg.model_version)
+
     retriever = get_rag_retriever()
 
     def provider_factory(prompt_version: str, model_version: str):
         return get_provider(
             settings.LLM_PROVIDER,
             api_key=settings.OPENAI_API_KEY,
-            model=model_version if model_version != "mock" else settings.LLM_MODEL,
+            model=model_version,
             instrumentation=instrumentation,
         )
 
