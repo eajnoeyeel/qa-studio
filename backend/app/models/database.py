@@ -276,7 +276,7 @@ class MultiComparisonResultModel(Base):
     __tablename__ = "multi_comparison_results"
 
     id = Column(String, primary_key=True)
-    experiment_id = Column(String, ForeignKey("experiments.id"), nullable=False, index=True)
+    experiment_id = Column(String, nullable=False, index=True)
     item_id = Column(String, ForeignKey("eval_items.id"), nullable=False)
     config_results_json = Column(Text, nullable=False)  # JSON {config_id: {scores, gates, tags}}
     rankings_json = Column(Text, nullable=False)        # JSON [{config_id, rank, total_score}]
