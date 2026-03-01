@@ -305,6 +305,8 @@ class ABExperimentRequest(BaseModel):
     config_b: ExperimentConfig
     sampling_config: Optional[Dict[str, Any]] = None
     name: Optional[str] = None
+    item_ids: Optional[List[str]] = None
+    limit: Optional[int] = Field(None, ge=1, le=5000, description="Max items to process per config")
 
 
 class ABExperimentResponse(BaseModel):

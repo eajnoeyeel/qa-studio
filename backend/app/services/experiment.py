@@ -42,7 +42,8 @@ class ExperimentService:
         config_a: ExperimentConfig,
         config_b: ExperimentConfig,
         sampling_config: Optional[Dict[str, Any]] = None,
-        item_ids: Optional[List[str]] = None
+        item_ids: Optional[List[str]] = None,
+        limit: Optional[int] = None,
     ) -> ExperimentInDB:
         """Run an A/B experiment."""
         # Create experiment record
@@ -56,13 +57,14 @@ class ExperimentService:
             sampling_config=sampling_config,
         ))
 
-        # Get items — fetch all items in the split (no silent cap)
+        # Get items — fetch items in the split, respecting limit
         item_repo = EvalItemRepository(self.db_session)
         if item_ids:
             items = [i for iid in item_ids if (i := item_repo.get(iid))]
         else:
             _, total = item_repo.get_all(split=dataset_split, page=1, page_size=1)
-            items, _ = item_repo.get_all(split=dataset_split, page=1, page_size=max(total, 1))
+            fetch_size = min(limit, total) if limit else total
+            items, _ = item_repo.get_all(split=dataset_split, page=1, page_size=max(fetch_size, 1))
 
         logger.info(f"Running experiment {experiment.id} on {len(items)} items")
 

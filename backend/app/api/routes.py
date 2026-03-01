@@ -334,6 +334,13 @@ async def run_ab_experiment(
     _validate_model_version(request.config_a.model_version)
     _validate_model_version(request.config_b.model_version)
 
+    # Cost safety: require explicit limit or item_ids when using a real provider
+    if settings.LLM_PROVIDER != "mock" and not request.item_ids and not request.limit:
+        raise HTTPException(
+            status_code=422,
+            detail="'limit' or 'item_ids' is required when LLM_PROVIDER is not 'mock' to prevent runaway API costs.",
+        )
+
     retriever = get_rag_retriever()
 
     # Get providers (can be same or different)
@@ -381,6 +388,8 @@ async def run_ab_experiment(
         config_a=request.config_a,
         config_b=request.config_b,
         sampling_config=request.sampling_config,
+        item_ids=request.item_ids,
+        limit=request.limit,
     )
 
     return ABExperimentResponse(
