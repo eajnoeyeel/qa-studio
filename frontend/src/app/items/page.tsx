@@ -91,7 +91,7 @@ export default function ItemsPage() {
                 </tbody>
               </table>
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setPage(p => Math.max(1, p - 1))}
@@ -99,11 +99,13 @@ export default function ItemsPage() {
                 >
                   Previous
                 </button>
-                <span style={{ color: 'var(--text-secondary)' }}>Page {page}</span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  Page {page} of {Math.max(1, Math.ceil(total / 20))}
+                </span>
                 <button
                   className="btn btn-secondary"
                   onClick={() => setPage(p => p + 1)}
-                  disabled={items.length < 20}
+                  disabled={page >= Math.ceil(total / 20)}
                 >
                   Next
                 </button>

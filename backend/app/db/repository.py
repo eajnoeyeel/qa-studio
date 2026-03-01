@@ -90,7 +90,7 @@ class EvalItemRepository:
             query = query.filter(EvalItemModel.candidate_source == candidate_source)
 
         total = query.count()
-        models = query.offset((page - 1) * page_size).limit(page_size).all()
+        models = query.order_by(EvalItemModel.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
         return [self._to_schema(m) for m in models], total
 
     def get_by_split(self, split: DatasetSplit) -> List[EvalItemInDB]:
