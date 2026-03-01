@@ -94,7 +94,9 @@ class EvalItemRepository:
         return [self._to_schema(m) for m in models], total
 
     def get_by_split(self, split: DatasetSplit) -> List[EvalItemInDB]:
-        models = self.db.query(EvalItemModel).filter(EvalItemModel.split == split).all()
+        models = self.db.query(EvalItemModel).filter(
+            EvalItemModel.split == split
+        ).order_by(EvalItemModel.created_at).all()
         return [self._to_schema(m) for m in models]
 
     def create(self, item: EvalItemCreate, commit: bool = True) -> EvalItemInDB:
