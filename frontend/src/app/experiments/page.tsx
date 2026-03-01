@@ -8,6 +8,7 @@ export default function ExperimentsPage() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Form state for new experiment
   const [formData, setFormData] = useState({
@@ -37,6 +38,7 @@ export default function ExperimentsPage() {
 
   async function runExperiment() {
     setRunning(true);
+    setError(null);
     try {
       await api.runExperiment({
         name: formData.name || `Exp_${Date.now()}`,
@@ -47,7 +49,7 @@ export default function ExperimentsPage() {
       });
       loadExperiments();
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Experiment failed');
     } finally {
       setRunning(false);
     }
@@ -132,6 +134,11 @@ export default function ExperimentsPage() {
           >
             {running ? 'Running...' : 'Run Experiment'}
           </button>
+          {error && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--bg-error, #ff4444)', color: '#fff', borderRadius: 6, fontSize: '0.875rem' }}>
+              {error}
+            </div>
+          )}
         </div>
 
         {/* Experiment List */}
