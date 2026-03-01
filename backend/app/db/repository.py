@@ -452,8 +452,13 @@ class HumanQueueRepository:
             self.db.flush()
         return True
 
-    def count_pending(self) -> int:
-        return self.db.query(HumanQueueModel).filter(HumanQueueModel.reviewed == False).count()
+    def count_pending(self, split: Optional[DatasetSplit] = None) -> int:
+        query = self.db.query(HumanQueueModel).filter(HumanQueueModel.reviewed == False)
+        if split:
+            query = query.join(
+                EvalItemModel, HumanQueueModel.item_id == EvalItemModel.id
+            ).filter(EvalItemModel.split == split)
+        return query.count()
 
     def _to_schema(self, model: HumanQueueModel) -> HumanQueueItem:
         return HumanQueueItem(

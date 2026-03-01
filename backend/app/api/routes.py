@@ -546,7 +546,7 @@ async def get_report_summary(
 
     stats = item_repo.get_summary_stats(dataset_split)
     total_evals = stats["total_evaluations"]
-    pending_count = queue_repo.count_pending()
+    pending_count = queue_repo.count_pending(split=dataset_split)
 
     return ReportSummaryResponse(
         dataset_split=dataset_split,
