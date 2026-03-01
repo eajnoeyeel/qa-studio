@@ -476,7 +476,7 @@ async def list_evaluations(
     item_id: Optional[str] = None,
     prompt_version: Optional[str] = None,
     model_version: Optional[str] = None,
-    docs_version: Optional[str] = None,
+    docs_version: str = Query("v1", description="Docs version (defaults to 'v1')"),
     db: Session = Depends(get_db)
 ):
     """List evaluations with optional filters."""
@@ -485,7 +485,7 @@ async def list_evaluations(
     if item_id:
         evaluations = repo.get_by_item(item_id)
     elif prompt_version and model_version:
-        evaluations = repo.get_by_version(prompt_version, model_version, docs_version or "v1")
+        evaluations = repo.get_by_version(prompt_version, model_version, docs_version)
     else:
         raise HTTPException(status_code=400, detail="Provide item_id or version filters")
 
