@@ -408,10 +408,10 @@ class HumanQueueRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_pending(self, limit: int = 50) -> List[HumanQueueItem]:
+    def get_pending(self, limit: int = 50, offset: int = 0) -> List[HumanQueueItem]:
         models = self.db.query(HumanQueueModel).filter(
             HumanQueueModel.reviewed == False
-        ).order_by(HumanQueueModel.priority.desc(), HumanQueueModel.created_at).limit(limit).all()
+        ).order_by(HumanQueueModel.priority.desc(), HumanQueueModel.created_at).offset(offset).limit(limit).all()
         return [self._to_schema(m) for m in models]
 
     def get_by_item(self, item_id: str) -> List[HumanQueueItem]:

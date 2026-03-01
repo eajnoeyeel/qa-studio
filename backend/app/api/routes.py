@@ -497,11 +497,12 @@ async def list_evaluations(
 @router.get("/human/queue", response_model=List[HumanQueueItem])
 async def get_human_queue(
     limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db)
 ):
     """Get pending items in human review queue."""
     repo = HumanQueueRepository(db)
-    return repo.get_pending(limit=limit)
+    return repo.get_pending(limit=limit, offset=offset)
 
 
 @router.post("/human/review", response_model=HumanReviewInDB)
