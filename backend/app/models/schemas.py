@@ -72,7 +72,7 @@ class ClassificationResult(BaseModel):
     label: str
     confidence: float = Field(ge=0, le=1)
     required_slots: List[str]
-    detected_slots: Dict[str, Optional[str]]
+    detected_slots: Dict[str, Any]
     missing_slots: List[str]
 
 
