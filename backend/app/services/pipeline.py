@@ -31,12 +31,14 @@ class EvaluationPipeline:
         provider: LLMProvider,
         retriever: RAGRetriever,
         instrumentation: LangfuseInstrumentation,
-        db_session
+        db_session,
+        session_factory=None,
     ):
         self.provider = provider
         self.retriever = retriever
         self.instrumentation = instrumentation
         self.db_session = db_session
+        self.session_factory = session_factory
         self.seen_tags = self._global_seen_tags
 
     async def process_item(
@@ -45,13 +47,22 @@ class EvaluationPipeline:
         prompt_version: str,
         model_version: str,
         docs_version: str,
-        sampling_config: Optional[Dict[str, Any]] = None
+        sampling_config: Optional[Dict[str, Any]] = None,
+        pre_classification: Optional[ClassificationResult] = None,
     ) -> Dict[str, Any]:
         """Process a single item through the evaluation pipeline."""
         from ..db.repository import (
             EvalItemRepository, EvaluationRepository, JudgeOutputRepository,
             HumanQueueRepository
         )
+
+        # Per-call session for concurrent safety
+        if self.session_factory is not None:
+            session = self.session_factory()
+            owns_session = True
+        else:
+            session = self.db_session
+            owns_session = False
 
         # Create trace
         trace_id = f"eval_{item.id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -90,16 +101,19 @@ class EvaluationPipeline:
             masked_text = await self._mask_pii(prepared_text, trace)
 
             # Update item with masked text
-            item_repo = EvalItemRepository(self.db_session)
+            item_repo = EvalItemRepository(session)
             item_repo.update_masked(item.id, masked_text, commit=False)
 
-            # Step 3: Classify
-            classification = await self._classify(
-                masked_text,
-                trace,
-                prompt_version=prompt_version,
-                model_version=model_version,
-            )
+            # Step 3: Classify (reuse pre_classification if provided)
+            if pre_classification is not None:
+                classification = pre_classification
+            else:
+                classification = await self._classify(
+                    masked_text,
+                    trace,
+                    prompt_version=prompt_version,
+                    model_version=model_version,
+                )
 
             # Extract masked question/response for downstream steps
             # so PII-masked text is used for RAG and judge, not raw input
@@ -127,7 +141,7 @@ class EvaluationPipeline:
             )
 
             # Persist evaluation, classification, and judge output atomically
-            eval_repo = EvaluationRepository(self.db_session)
+            eval_repo = EvaluationRepository(session)
             evaluation = eval_repo.create(
                 EvaluationCreate(
                     item_id=item.id,
@@ -141,7 +155,7 @@ class EvaluationPipeline:
 
             eval_repo.update_classification(evaluation.id, classification, commit=False)
 
-            judge_repo = JudgeOutputRepository(self.db_session)
+            judge_repo = JudgeOutputRepository(session)
             judge_repo.create(evaluation.id, judge_output, commit=False)
 
             # Record scores in Langfuse
@@ -169,7 +183,7 @@ class EvaluationPipeline:
             )
 
             if should_queue:
-                queue_repo = HumanQueueRepository(self.db_session)
+                queue_repo = HumanQueueRepository(session)
                 queue_repo.create(
                     item_id=item.id,
                     evaluation_id=evaluation.id,
@@ -180,7 +194,7 @@ class EvaluationPipeline:
                 result["human_queued"] = True
 
             # Commit all DB writes atomically
-            self.db_session.commit()
+            session.commit()
 
             # Compile result
             result["gate_failed"] = not judge_output.gate_passed
@@ -190,7 +204,7 @@ class EvaluationPipeline:
             result["classification"] = classification.label
 
         except Exception as e:
-            self.db_session.rollback()
+            session.rollback()
             logger.error(f"Error processing item {item.id}: {e}")
             self.instrumentation.record_span(
                 trace,
@@ -202,8 +216,16 @@ class EvaluationPipeline:
 
         finally:
             self.instrumentation.flush()
+            if owns_session:
+                session.close()
 
         return result
+
+    async def classify_item(self, item, trace, prompt_version, model_version):
+        """Classify an item (public, for sharing across A/B arms)."""
+        prepared = await self._prepare(item, trace)
+        masked = await self._mask_pii(prepared, trace)
+        return await self._classify(masked, trace, prompt_version, model_version)
 
     async def _prepare(self, item: EvalItemInDB, trace) -> str:
         """Prepare text from item fields."""
