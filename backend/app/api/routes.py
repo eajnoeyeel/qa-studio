@@ -1,4 +1,5 @@
 """API routes for QA Evaluation Studio."""
+import asyncio
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -261,6 +262,7 @@ async def evaluate_run(
         retriever=retriever,
         instrumentation=instrumentation,
         db_session=db,
+        session_factory=SessionLocal,
     )
 
     # Get items — respect explicit limit, otherwise process all items in the split
@@ -281,17 +283,20 @@ async def evaluate_run(
     )
     items = [item for item in items if item.id not in already_evaluated]
 
-    # Process items
-    results = []
-    for item in items:
-        result = await pipeline.process_item(
-            item,
-            prompt_version=request.prompt_version,
-            model_version=request.model_version,
-            docs_version=request.docs_version,
-            sampling_config=request.sampling_config,
-        )
-        results.append(result)
+    # Process items concurrently
+    semaphore = asyncio.Semaphore(10)
+
+    async def process_one(item):
+        async with semaphore:
+            return await pipeline.process_item(
+                item,
+                prompt_version=request.prompt_version,
+                model_version=request.model_version,
+                docs_version=request.docs_version,
+                sampling_config=request.sampling_config,
+            )
+
+    results = await asyncio.gather(*[process_one(item) for item in items])
 
     # Aggregate results
     gate_fail_count = sum(1 for r in results if r.get("gate_failed"))
@@ -363,12 +368,14 @@ async def run_ab_experiment(
         retriever=retriever,
         instrumentation=instrumentation,
         db_session=db,
+        session_factory=SessionLocal,
     )
     pipeline_b = EvaluationPipeline(
         provider=provider_b,
         retriever=retriever,
         instrumentation=instrumentation,
         db_session=db,
+        session_factory=SessionLocal,
     )
 
     # Run experiment
