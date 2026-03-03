@@ -1,4 +1,5 @@
 """A/B Experiment service."""
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
@@ -85,42 +86,62 @@ class ExperimentService:
         queue_repo = HumanQueueRepository(self.db_session)
         results = []
 
-        for item in items:
-            try:
-                # Run config A
-                result_a = await self.pipeline_a.process_item(
-                    item,
-                    prompt_version=config_a.prompt_version,
-                    model_version=config_a.model_version,
-                    docs_version=docs_version,
-                    sampling_config=sampling_config,
-                )
+        semaphore = asyncio.Semaphore(10)
 
-                # Run config B
-                result_b = await self.pipeline_b.process_item(
-                    item,
-                    prompt_version=config_b.prompt_version,
-                    model_version=config_b.model_version,
-                    docs_version=docs_version,
-                    sampling_config=sampling_config,
-                )
-
-                # Compare results
-                exp_result = self._compare_results(item.id, result_a, result_b, sampling_config)
-                result_repo.create(experiment.id, exp_result)
-                results.append(exp_result)
-
-                # Queue ambiguous cases for human review
-                if exp_result.is_ambiguous:
-                    queue_repo.create(
-                        item_id=item.id,
-                        evaluation_id=result_a.get("evaluation_id", ""),
-                        reason=HumanQueueReason.AB_AMBIGUOUS,
-                        priority=50,
+        async def process_one(item):
+            async with semaphore:
+                try:
+                    # Classify once, share across both arms
+                    pre_classification = await self.pipeline_a.classify_item(
+                        item, trace,
+                        prompt_version=config_a.prompt_version,
+                        model_version=config_a.model_version,
                     )
 
-            except Exception as e:
-                logger.error(f"Error processing item {item.id} in experiment: {e}")
+                    # Run both arms concurrently
+                    result_a, result_b = await asyncio.gather(
+                        self.pipeline_a.process_item(
+                            item,
+                            prompt_version=config_a.prompt_version,
+                            model_version=config_a.model_version,
+                            docs_version=docs_version,
+                            sampling_config=sampling_config,
+                            pre_classification=pre_classification,
+                        ),
+                        self.pipeline_b.process_item(
+                            item,
+                            prompt_version=config_b.prompt_version,
+                            model_version=config_b.model_version,
+                            docs_version=docs_version,
+                            sampling_config=sampling_config,
+                            pre_classification=pre_classification,
+                        ),
+                    )
+
+                    return item.id, result_a, result_b
+                except Exception as e:
+                    logger.error(f"Error processing item {item.id} in experiment: {e}")
+                    return None
+
+        # Process all items concurrently
+        raw_results = await asyncio.gather(*[process_one(item) for item in items])
+
+        # Sequential DB writes for experiment results
+        for entry in raw_results:
+            if entry is None:
+                continue
+            item_id, result_a, result_b = entry
+            exp_result = self._compare_results(item_id, result_a, result_b, sampling_config)
+            result_repo.create(experiment.id, exp_result)
+            results.append(exp_result)
+
+            if exp_result.is_ambiguous:
+                queue_repo.create(
+                    item_id=item_id,
+                    evaluation_id=result_a.get("evaluation_id", ""),
+                    reason=HumanQueueReason.AB_AMBIGUOUS,
+                    priority=50,
+                )
 
         # Calculate summary
         summary = self._calculate_summary(experiment.id, results)
