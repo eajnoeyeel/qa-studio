@@ -88,12 +88,14 @@ class RAGIndexer:
         docs_path: str,
         vector_store_path: str,
         embedding_model: str = "text-embedding-3-small",
-        use_mock: bool = True
+        use_mock: bool = True,
+        openai_api_key: Optional[str] = None,
     ):
         self.docs_path = docs_path
         self.vector_store_path = Path(vector_store_path)
         self.embedding_model = embedding_model
         self.use_mock = use_mock
+        self.openai_api_key = openai_api_key
         self.documents: List[Dict[str, Any]] = []
         self.embeddings = None
         self.vector_store = None
@@ -137,12 +139,15 @@ class RAGIndexer:
     def _build_real_index(self):
         """Build real index using LangChain and embeddings."""
         try:
-            from langchain_community.embeddings import OpenAIEmbeddings
+            from langchain_openai import OpenAIEmbeddings
             from langchain_community.vectorstores import FAISS
             from langchain_core.documents import Document
 
-            # Initialize embeddings
-            self.embeddings = OpenAIEmbeddings(model=self.embedding_model)
+            # Initialize embeddings (pass key explicitly since pydantic-settings may not set os.environ)
+            self.embeddings = OpenAIEmbeddings(
+                model=self.embedding_model,
+                api_key=self.openai_api_key,
+            )
 
             # Convert to LangChain documents
             lc_docs = []
@@ -200,14 +205,17 @@ class RAGIndexer:
     def _load_real_index(self) -> bool:
         """Load real FAISS index."""
         try:
-            from langchain_community.embeddings import OpenAIEmbeddings
+            from langchain_openai import OpenAIEmbeddings
             from langchain_community.vectorstores import FAISS
 
             index_path = self.vector_store_path / "faiss_index"
             if not index_path.exists():
                 return False
 
-            self.embeddings = OpenAIEmbeddings(model=self.embedding_model)
+            self.embeddings = OpenAIEmbeddings(
+                model=self.embedding_model,
+                api_key=self.openai_api_key,
+            )
             self.vector_store = FAISS.load_local(
                 str(index_path),
                 self.embeddings,

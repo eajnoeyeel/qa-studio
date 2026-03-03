@@ -91,6 +91,7 @@ def get_rag_retriever() -> RAGRetriever:
             vector_store_path=settings.VECTOR_STORE_PATH,
             embedding_model=settings.EMBEDDING_MODEL,
             use_mock=use_mock,
+            openai_api_key=settings.OPENAI_API_KEY,
         )
         indexer.load_index() or indexer.build_index()
         _rag_retriever = RAGRetriever(indexer)
@@ -338,13 +339,6 @@ async def run_ab_experiment(
     """Run A/B experiment."""
     _validate_model_version(request.config_a.model_version)
     _validate_model_version(request.config_b.model_version)
-
-    # Cost safety: require explicit limit or item_ids when using a real provider
-    if settings.LLM_PROVIDER != "mock" and not request.item_ids and not request.limit:
-        raise HTTPException(
-            status_code=422,
-            detail="'limit' or 'item_ids' is required when LLM_PROVIDER is not 'mock' to prevent runaway API costs.",
-        )
 
     retriever = get_rag_retriever()
 
@@ -609,6 +603,7 @@ async def reindex_documents(db: Session = Depends(get_db)):
         vector_store_path=settings.VECTOR_STORE_PATH,
         embedding_model=settings.EMBEDDING_MODEL,
         use_mock=use_mock,
+        openai_api_key=settings.OPENAI_API_KEY,
     )
     success = indexer.build_index()
 

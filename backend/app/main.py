@@ -65,6 +65,7 @@ async def startup_event():
         docs_path=settings.DOCS_PATH,
         vector_store_path=settings.VECTOR_STORE_PATH,
         use_mock=use_mock,
+        openai_api_key=settings.OPENAI_API_KEY,
     )
     if not indexer.load_index():
         indexer.build_index()
