@@ -150,7 +150,7 @@
         "url": "http://host.docker.internal:8000/api/v1/prompts",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"name\": $('Create Proposal').item.json.prompt_name,\n  \"prompt\": $('Create Proposal').item.json.proposed_prompt,\n  \"labels\": [\n    ('candidate-' + $('Create Proposal').item.json.id)\n  ]\n} }}",
+        "jsonBody": "={{ {\n  \"name\": $('Create Proposal').item.json.prompt_name,\n  \"prompt\": $('Create Proposal').item.json.proposed_prompt,\n  \"labels\": [\n    ('cand-' + $('Create Proposal').item.json.id.substring(0, 31))\n  ]\n} }}",
         "options": {
           "timeout": 30000
         }
@@ -171,9 +171,9 @@
         "url": "http://host.docker.internal:8000/api/v1/experiment/ab",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"dataset_split\": \"ab_eval\",\n  \"docs_version\": \"v1\",\n  \"config_a\": {\n    \"prompt_version\": \"production\",\n    \"model_version\": ($env.LLM_MODEL || \"gpt-4o-mini\")\n  },\n  \"config_b\": {\n    \"prompt_version\": ('candidate-' + $('Create Proposal').item.json.id),\n    \"model_version\": ($env.LLM_MODEL || \"gpt-4o-mini\")\n  },\n  \"name\": ('AutoImprovement-AB-Test-' + $('Create Proposal').item.json.id)\n} }}",
+        "jsonBody": "={{ {\n  \"dataset_split\": \"ab_eval\",\n  \"docs_version\": \"v1\",\n  \"config_a\": {\n    \"prompt_version\": \"production\",\n    \"model_version\": \"gpt-4o-mini\"\n  },\n  \"config_b\": {\n    \"prompt_version\": ('cand-' + $('Create Proposal').item.json.id.substring(0, 31)),\n    \"model_version\": \"gpt-4o-mini\"\n  },\n  \"limit\": 15,\n  \"name\": ('AutoImprovement-AB-Test-' + $('Create Proposal').item.json.id)\n} }}",
         "options": {
-          "timeout": 300000
+          "timeout": 900000
         }
       },
       "id": "1a2b3c4d-0006-0006-0006-000000000006",
@@ -226,13 +226,9 @@
         2256,
         128
       ],
-      "webhookId": "762270cc-4b22-4830-8d03-127cf941ac39",
-      "credentials": {
-        "slackApi": {
-          "id": "A6h0Pxj0ZmjaZea7",
-          "name": "Slack account"
-        }
-      }
+      "webhookId": "07a117c7-a6fa-421a-aa0f-36be75a60cf7",
+      "credentials": {},
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -255,13 +251,9 @@
         1360,
         320
       ],
-      "webhookId": "e9fbc331-7101-42b5-a743-906b9e273594",
-      "credentials": {
-        "slackApi": {
-          "id": "A6h0Pxj0ZmjaZea7",
-          "name": "Slack account"
-        }
-      }
+      "webhookId": "a71e744d-c681-4562-97e5-72ae2193ef15",
+      "credentials": {},
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -284,13 +276,9 @@
         912,
         416
       ],
-      "webhookId": "fe63e23e-fba8-43ff-b881-b110a68d22b5",
-      "credentials": {
-        "slackApi": {
-          "id": "A6h0Pxj0ZmjaZea7",
-          "name": "Slack account"
-        }
-      }
+      "webhookId": "7f995d24-06d7-446f-ae61-0fd311b20189",
+      "credentials": {},
+      "continueOnFail": true
     },
     {
       "parameters": {},
