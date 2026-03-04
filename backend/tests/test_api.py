@@ -1,7 +1,9 @@
 """Tests for API endpoints."""
 import json
 import tempfile
+import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,6 +107,52 @@ def test_evaluate_run_validation(client):
     assert "gate_fail_count" in data
 
 
+def test_evaluate_run_reports_error_count(client):
+    """Evaluation endpoint should report item-level pipeline errors separately."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        item_repo.create(
+            EvalItemCreate(
+                external_id=f"eval-err-{uuid.uuid4().hex[:8]}",
+                split="dev",
+                question="Q?",
+                response="A.",
+            ),
+            commit=True,
+        )
+    finally:
+        db.close()
+
+    async def _fake_process_item(*args, **kwargs):
+        return {
+            "item_id": "x",
+            "trace_id": "t",
+            "gate_failed": True,
+            "human_queued": False,
+            "tags": [],
+            "scores": {},
+            "error": "simulated failure",
+        }
+
+    with patch("app.api.endpoints.evaluate.EvaluationPipeline.process_item", side_effect=_fake_process_item):
+        response = client.post(
+            "/api/v1/evaluate/run",
+            json={
+                "dataset_split": "dev",
+                "prompt_version": "v1",
+                "model_version": "mock",
+                "docs_version": "v1",
+                "limit": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["processed_count"] == 0
+    assert data["error_count"] == 1
+
+
 def test_report_summary(client):
     """Test report summary endpoint."""
     response = client.get("/api/v1/reports/summary?dataset_split=dev")
@@ -180,6 +228,66 @@ def test_submit_human_review_returns_typed_gold_fields(client):
     assert data["gold_tags"] == ["off_topic"]
 
 
+def test_submit_human_review_rejects_mismatched_evaluation_id(client):
+    """Review request must use the queue item's evaluation_id."""
+    db = api_routes.SessionLocal()
+    try:
+        item_repo = EvalItemRepository(db)
+        eval_repo = EvaluationRepository(db)
+        queue_repo = HumanQueueRepository(db)
+
+        item = item_repo.create(
+            EvalItemCreate(
+                external_id=f"review-mismatch-{uuid.uuid4().hex[:8]}",
+                split="dev",
+                question="Question",
+                response="Response",
+            ),
+            commit=True,
+        )
+
+        eval_a = eval_repo.create(
+            EvaluationCreate(
+                item_id=item.id,
+                prompt_version="v1",
+                model_version="mock",
+                docs_version="v1",
+            ),
+            commit=True,
+        )
+        eval_b = eval_repo.create(
+            EvaluationCreate(
+                item_id=item.id,
+                prompt_version="v2",
+                model_version="mock",
+                docs_version="v1",
+            ),
+            commit=True,
+        )
+
+        queue_item = queue_repo.create(
+            item_id=item.id,
+            evaluation_id=eval_a.id,
+            reason=HumanQueueReason.MANUAL,
+            priority=1,
+            commit=True,
+        )
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/human/review",
+        json={
+            "queue_item_id": queue_item.id,
+            "evaluation_id": eval_b.id,  # Mismatched on purpose
+            "gold_label": "math",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+
+
 def test_ingest_with_scenario_and_candidate_source(client):
     """Test that scenario_id and candidate_source persist through ingest and return."""
     db = api_routes.SessionLocal()
@@ -204,6 +312,25 @@ def test_ingest_with_scenario_and_candidate_source(client):
     data = response.json()["item"]
     assert data["scenario_id"] == "uf_test_0"
     assert data["candidate_source"] == "alpaca-7b"
+
+
+def test_ingest_upload_skips_duplicate_external_ids_in_same_batch(client):
+    """Batch ingest should dedupe repeated external_id values in one upload."""
+    duplicate_id = f"dup-batch-{uuid.uuid4().hex[:8]}"
+    payload = "\n".join([
+        json.dumps({"id": duplicate_id, "question": "Q1", "response": "A1"}),
+        json.dumps({"id": duplicate_id, "question": "Q2", "response": "A2"}),
+    ])
+
+    response = client.post(
+        "/api/v1/ingest/upload",
+        files={"file": ("dup.jsonl", payload, "application/jsonl")},
+        data={"split": "dev"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ingested_count"] == 1
 
 
 def test_list_items_filter_by_scenario_id(client):
