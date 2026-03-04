@@ -31,9 +31,10 @@ app.include_router(router, prefix=settings.API_PREFIX)
 def _run_migrations():
     """Apply lightweight schema migrations for new columns on existing DBs."""
     from sqlalchemy import create_engine, inspect, text
+    is_sqlite = "sqlite" in settings.DATABASE_URL
     engine = create_engine(
         settings.DATABASE_URL,
-        connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
+        connect_args={"check_same_thread": False, "timeout": 60} if is_sqlite else {},
     )
     inspector = inspect(engine)
     existing = {c["name"] for c in inspector.get_columns("eval_items")}
@@ -54,21 +55,10 @@ def _run_migrations():
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    from .rag.indexer import RAGIndexer
-
     # Apply any pending schema migrations
     _run_migrations()
 
-    # Build RAG index if not exists
-    use_mock = settings.LLM_PROVIDER == "mock" or not settings.OPENAI_API_KEY
-    indexer = RAGIndexer(
-        docs_path=settings.DOCS_PATH,
-        vector_store_path=settings.VECTOR_STORE_PATH,
-        use_mock=use_mock,
-        openai_api_key=settings.OPENAI_API_KEY,
-    )
-    if not indexer.load_index():
-        indexer.build_index()
+    # RAG index is built lazily on first request via deps.get_rag_retriever()
 
 
 @app.get("/")
