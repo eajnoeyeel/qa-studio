@@ -86,7 +86,7 @@ class ExperimentService:
         queue_repo = HumanQueueRepository(self.db_session)
         results = []
 
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(20)
 
         async def process_one(item):
             async with semaphore:

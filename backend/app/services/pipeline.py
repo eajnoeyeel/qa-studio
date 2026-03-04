@@ -218,7 +218,8 @@ class EvaluationPipeline:
                 )
 
         finally:
-            self.instrumentation.flush()
+            # Don't flush per-item — Langfuse SDK batches internally.
+            # Caller (experiment/evaluate endpoint) flushes once at the end.
             if owns_session:
                 session.close()
 

@@ -71,7 +71,7 @@ async def evaluate_run(
     )
     items = [item for item in items if item.id not in already_evaluated]
 
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(20)
 
     async def process_one(item):
         async with semaphore:
