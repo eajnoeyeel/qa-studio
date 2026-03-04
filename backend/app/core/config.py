@@ -1,6 +1,7 @@
 """Application configuration with environment variables."""
 from functools import lru_cache
 from typing import Optional
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
 
     # Database
-    DATABASE_URL: str = "sqlite:///./qa_studio.db"
+    DATABASE_URL: str = "postgresql://qa_studio:qa_studio@localhost:5433/qa_studio"
 
     # Langfuse (optional - graceful fallback if not set)
     LANGFUSE_PUBLIC_KEY: Optional[str] = None
@@ -35,6 +36,17 @@ class Settings(BaseSettings):
     # Sampling thresholds
     AB_AMBIGUOUS_THRESHOLD: float = 2.0
     LOW_SCORE_THRESHOLD: int = 2
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug_flag(cls, value):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"release", "prod", "production"}:
+                return False
+            if normalized in {"debug", "dev", "development"}:
+                return True
+        return value
 
     class Config:
         env_file = ".env"

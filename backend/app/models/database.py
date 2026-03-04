@@ -331,7 +331,26 @@ class PromptProposalModel(Base):
 # Database initialization
 def init_db(database_url: str):
     """Initialize database and create tables."""
-    engine = create_engine(database_url, connect_args={"check_same_thread": False} if "sqlite" in database_url else {})
+    is_sqlite = "sqlite" in database_url
+    if is_sqlite:
+        # SQLite path kept for tests (conftest.py uses SQLite)
+        engine = create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+        )
+        from sqlalchemy import event
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+    else:
+        engine = create_engine(
+            database_url,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=60,
+        )
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal

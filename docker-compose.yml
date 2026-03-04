@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: qa_studio_postgres
+    environment:
+      POSTGRES_USER: qa_studio
+      POSTGRES_PASSWORD: qa_studio
+      POSTGRES_DB: qa_studio
+    ports:
+      - "5433:5432"
+    volumes:
+      - qa_studio_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qa_studio"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  qa_studio_pgdata:
