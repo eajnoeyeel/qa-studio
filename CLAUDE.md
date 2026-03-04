@@ -74,14 +74,22 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## Commands
 
+### Docker (PostgreSQL)
+```bash
+docker compose up -d                           # start Postgres on port 5433
+docker compose ps                              # verify healthy
+docker compose down                            # stop
+```
+
 ### Backend (Python/FastAPI)
 ```bash
 cd backend
 source .venv/bin/activate
 uvicorn app.main:app --reload --port 8000     # dev server
-pytest                                         # all tests
+pytest                                         # all tests (uses SQLite)
 pytest tests/test_mock_provider.py -v          # single test file
 pytest --cov=app                               # with coverage
+python scripts/migrate_to_postgres.py          # one-time SQLite → Postgres migration
 ```
 
 ### Frontend (Next.js)
@@ -113,7 +121,7 @@ curl -X POST "http://localhost:8000/api/v1/evaluate/run" \
 
 ## Architecture
 
-**Backend** (`backend/app/`): FastAPI app with SQLite (SQLAlchemy). All routes in a single `api/routes.py`. Config via `pydantic-settings` from `.env`.
+**Backend** (`backend/app/`): FastAPI app with PostgreSQL (SQLAlchemy). Routes split across `api/endpoints/`. Config via `pydantic-settings` from `.env`. SQLite still used for tests via `conftest.py`.
 
 **Evaluation Pipeline** (`services/pipeline.py`): Per-item flow: prepare → mask PII (regex) → classify (taxonomy) → RAG retrieve (masked) → judge (masked, gates + scores) → sampling decision (human queue). PII-masked text is used for all downstream steps (RAG, judge) — raw text never leaves the masking boundary.
 
@@ -156,6 +164,7 @@ Duplicate rows are skipped on ingest when `external_id` matches an existing reco
 ## Environment
 
 Backend requires `.env` in `backend/` (copy from `.env.example`). Key settings:
+- `DATABASE_URL=postgresql://qa_studio:qa_studio@localhost:5433/qa_studio` (requires `docker compose up -d`)
 - `LLM_PROVIDER=mock` for local dev (no API keys needed)
 - `LLM_PROVIDER=openai` + `OPENAI_API_KEY` for production
 - Langfuse keys are optional
