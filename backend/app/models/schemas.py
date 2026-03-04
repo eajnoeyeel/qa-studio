@@ -291,6 +291,7 @@ class EvaluateRunRequest(BaseModel):
 class EvaluateRunResponse(BaseModel):
     """Response for evaluation run."""
     processed_count: int
+    error_count: int = 0
     gate_fail_count: int
     human_queue_count: int
     top_tags: Dict[str, int]

@@ -139,6 +139,7 @@ export const api = {
   }) =>
     fetchAPI<{
       processed_count: number;
+      error_count: number;
       gate_fail_count: number;
       human_queue_count: number;
       top_tags: Record<string, number>;
