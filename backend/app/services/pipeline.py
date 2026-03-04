@@ -87,22 +87,22 @@ class EvaluationPipeline:
         result = {
             "item_id": item.id,
             "trace_id": trace_id,
-            "gate_failed": False,
+            # Default to failed until a valid judge result is committed.
+            # This prevents silent "success" on partial/errored execution.
+            "gate_failed": True,
             "human_queued": False,
             "tags": [],
             "scores": {},
         }
 
         try:
+            # --- Compute phase (no DB writes, no locks held) ---
+
             # Step 1: Prepare text
             prepared_text = await self._prepare(item, trace)
 
             # Step 2: Mask PII
             masked_text = await self._mask_pii(prepared_text, trace)
-
-            # Update item with masked text
-            item_repo = EvalItemRepository(session)
-            item_repo.update_masked(item.id, masked_text, commit=False)
 
             # Step 3: Classify (reuse pre_classification if provided)
             if pre_classification is not None:
@@ -140,25 +140,29 @@ class EvaluationPipeline:
                 model_version=model_version,
             )
 
-            # Persist evaluation, classification, and judge output atomically
-            eval_repo = EvaluationRepository(session)
-            evaluation = eval_repo.create(
-                EvaluationCreate(
-                    item_id=item.id,
-                    prompt_version=prompt_version,
-                    model_version=model_version,
-                    docs_version=docs_version,
-                ),
-                trace_id=trace_id,
-                commit=False,
+            # Step 6: Sampling decision
+            should_queue, queue_reason = await self._sampling_decision(
+                judge_output,
+                sampling_config,
+                trace
             )
 
-            eval_repo.update_classification(evaluation.id, classification, commit=False)
+            # --- DB write phase ---
+            evaluation, queued_for_human = await self._persist_outputs(
+                session=session,
+                item=item,
+                masked_text=masked_text,
+                prompt_version=prompt_version,
+                model_version=model_version,
+                docs_version=docs_version,
+                trace_id=trace_id,
+                classification=classification,
+                judge_output=judge_output,
+                should_queue=should_queue,
+                queue_reason=queue_reason,
+            )
 
-            judge_repo = JudgeOutputRepository(session)
-            judge_repo.create(evaluation.id, judge_output, commit=False)
-
-            # Record scores in Langfuse
+            # Record scores in Langfuse (after commit, non-blocking)
             for score in judge_output.scores:
                 self.instrumentation.record_score(
                     trace,
@@ -175,33 +179,26 @@ class EvaluationPipeline:
                     gate.reason
                 )
 
-            # Step 6: Sampling decision
-            should_queue, queue_reason = await self._sampling_decision(
-                judge_output,
-                sampling_config,
-                trace
-            )
-
-            if should_queue:
-                queue_repo = HumanQueueRepository(session)
-                queue_repo.create(
-                    item_id=item.id,
-                    evaluation_id=evaluation.id,
-                    reason=queue_reason,
-                    priority=self._calculate_priority(queue_reason, judge_output),
-                    commit=False,
-                )
-                result["human_queued"] = True
-
-            # Commit all DB writes atomically
-            session.commit()
-
             # Compile result
             result["gate_failed"] = not judge_output.gate_passed
             result["tags"] = judge_output.failure_tags
             result["scores"] = {s.score_type: s.score for s in judge_output.scores}
             result["evaluation_id"] = evaluation.id
             result["classification"] = classification.label
+            result["human_queued"] = queued_for_human
+
+            # Update trace with input/output so Langfuse UI shows meaningful data
+            if hasattr(trace, 'update'):
+                trace.update(
+                    input={"question": item.question[:500], "response": item.response[:500]},
+                    output={
+                        "gate_passed": judge_output.gate_passed,
+                        "scores": result["scores"],
+                        "failure_tags": judge_output.failure_tags,
+                        "classification": classification.label,
+                        "human_queued": queued_for_human,
+                    },
+                )
 
         except Exception as e:
             session.rollback()
@@ -212,7 +209,13 @@ class EvaluationPipeline:
                 error=str(e),
                 latency_ms=(time.time() - start_time) * 1000,
             )
+            result["gate_failed"] = True
             result["error"] = str(e)
+            if hasattr(trace, 'update'):
+                trace.update(
+                    input={"question": item.question[:500]},
+                    output={"error": str(e)},
+                )
 
         finally:
             self.instrumentation.flush()
@@ -220,6 +223,61 @@ class EvaluationPipeline:
                 session.close()
 
         return result
+
+    async def _persist_outputs(
+        self,
+        session,
+        item: EvalItemInDB,
+        masked_text: str,
+        prompt_version: str,
+        model_version: str,
+        docs_version: str,
+        trace_id: str,
+        classification: ClassificationResult,
+        judge_output: JudgeOutput,
+        should_queue: bool,
+        queue_reason: Optional[HumanQueueReason],
+    ):
+        """Persist all pipeline outputs in a single transaction."""
+        from ..db.repository import (
+            EvalItemRepository, EvaluationRepository, JudgeOutputRepository, HumanQueueRepository
+        )
+
+        queued_for_human = False
+
+        item_repo = EvalItemRepository(session)
+        item_repo.update_masked(item.id, masked_text, commit=False)
+
+        eval_repo = EvaluationRepository(session)
+        evaluation = eval_repo.create(
+            EvaluationCreate(
+                item_id=item.id,
+                prompt_version=prompt_version,
+                model_version=model_version,
+                docs_version=docs_version,
+            ),
+            trace_id=trace_id,
+            commit=False,
+        )
+
+        eval_repo.update_classification(evaluation.id, classification, commit=False)
+
+        judge_repo = JudgeOutputRepository(session)
+        judge_repo.create(evaluation.id, judge_output, commit=False)
+
+        if should_queue and queue_reason is not None:
+            queue_repo = HumanQueueRepository(session)
+            queue_repo.create(
+                item_id=item.id,
+                evaluation_id=evaluation.id,
+                reason=queue_reason,
+                priority=self._calculate_priority(queue_reason, judge_output),
+                commit=False,
+            )
+            queued_for_human = True
+
+        session.commit()
+        return evaluation, queued_for_human
 
     async def classify_item(self, item, trace, prompt_version, model_version):
         """Classify an item (public, for sharing across A/B arms)."""

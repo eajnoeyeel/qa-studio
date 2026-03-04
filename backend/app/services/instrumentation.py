@@ -5,7 +5,7 @@ Compatible with Langfuse SDK v3.x.
 import time
 import logging
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 from functools import wraps
 
 logger = logging.getLogger(__name__)
@@ -13,17 +13,23 @@ logger = logging.getLogger(__name__)
 
 class LangfuseInstrumentation:
     """Wrapper for Langfuse tracing with fallback to local logging."""
+    _prompt_cache: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+    _missing_prompt_until: Dict[Tuple[str, str], float] = {}
+    _prompt_cache_ttl_seconds: float = 300.0
+    _missing_prompt_ttl_seconds: float = 60.0
 
     def __init__(
         self,
         public_key: Optional[str] = None,
         secret_key: Optional[str] = None,
         host: str = "https://cloud.langfuse.com",
-        db_session=None
+        db_session=None,
+        session_factory=None,
     ):
         self.enabled = bool(public_key and secret_key)
         self.langfuse = None
         self.db_session = db_session
+        self.session_factory = session_factory
 
         if self.enabled:
             try:
@@ -51,19 +57,24 @@ class LangfuseInstrumentation:
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None
     ):
-        """Create a new trace via a root span (Langfuse v3)."""
+        """Create a Langfuse trace via a root span with trace-level metadata."""
         if self.enabled and self.langfuse:
             try:
-                # In v3, start_span creates a trace automatically
-                span = self.langfuse.start_span(
+                root_span = self.langfuse.start_span(
                     name=name,
-                    input={"trace_id": trace_id},
-                    metadata={**(metadata or {}), "tags": tags or []},
+                    metadata=metadata or {},
+                )
+                # Populate trace-level fields so the Langfuse UI shows
+                # Name, Tags, and Metadata in the traces list view.
+                root_span.update_trace(
+                    name=name,
+                    tags=tags or [],
+                    metadata=metadata or {},
                 )
                 return LangfuseTraceWrapper(
                     trace_id=trace_id,
                     name=name,
-                    root_span=span,
+                    root_span=root_span,
                     langfuse=self.langfuse,
                     tags=tags,
                     metadata=metadata,
@@ -122,8 +133,10 @@ class LangfuseInstrumentation:
         value: float,
         comment: Optional[str] = None
     ):
-        """Record a score."""
-        if self.enabled and self.langfuse:
+        """Record a score on the trace."""
+        if hasattr(trace, 'score'):
+            trace.score(name=name, value=value, comment=comment)
+        elif self.enabled and self.langfuse:
             try:
                 trace_id = getattr(trace, 'trace_id', None)
                 self.langfuse.create_score(
@@ -136,7 +149,6 @@ class LangfuseInstrumentation:
             except Exception as e:
                 logger.error(f"Failed to record Langfuse score: {e}")
 
-        # Log to fallback
         logger.info(f"Score recorded: {name}={value} ({comment})")
 
     def _log_span(
@@ -153,8 +165,27 @@ class LangfuseInstrumentation:
         ms_str = f"{latency_ms:.2f}ms" if latency_ms is not None else "N/A"
         logger.debug(f"Span: {trace_id}/{name} - {ms_str} - {'ERROR: ' + error if error else 'OK'}")
 
-        # Store in DB if session available
-        if self.db_session:
+        # Store in DB if session available.
+        if self.session_factory:
+            try:
+                from ..db.repository import TraceLogRepository
+                session = self.session_factory()
+                try:
+                    repo = TraceLogRepository(session)
+                    repo.create(
+                        trace_id=trace_id,
+                        span_name=name,
+                        input_data=input_data,
+                        output_data=output_data,
+                        latency_ms=latency_ms,
+                        error=error,
+                        commit=True,
+                    )
+                finally:
+                    session.close()
+            except Exception as e:
+                logger.error(f"Failed to save trace to DB: {e}")
+        elif self.db_session:
             try:
                 from ..db.repository import TraceLogRepository
                 repo = TraceLogRepository(self.db_session)
@@ -166,8 +197,6 @@ class LangfuseInstrumentation:
                     output_data=output_data,
                     latency_ms=latency_ms,
                     error=error,
-                    # Avoid breaking caller transaction atomicity by committing only
-                    # when no external transaction is in progress.
                     commit=not in_tx,
                 )
             except Exception as e:
@@ -185,22 +214,37 @@ class LangfuseInstrumentation:
 
     def get_prompt(self, name: str, label: str = "production"):
         """Fetch a prompt from Langfuse by name and label. Returns None if unavailable."""
+        key = (name, label)
+        now = time.monotonic()
+        if self._missing_prompt_until.get(key, 0.0) > now:
+            return None
+        cached = self._prompt_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+
         if self.enabled and self.langfuse:
             try:
-                return self.langfuse.get_prompt(name, label=label)
+                prompt = self.langfuse.get_prompt(name, label=label)
+                self._prompt_cache[key] = (now + self._prompt_cache_ttl_seconds, prompt)
+                self._missing_prompt_until.pop(key, None)
+                return prompt
             except Exception as e:
                 logger.debug(f"Langfuse prompt '{name}' not found ({label}): {e}")
+                self._missing_prompt_until[key] = now + self._missing_prompt_ttl_seconds
         return None
 
     def list_prompts(self) -> List[dict]:
         """List all prompts from Langfuse."""
         if self.enabled and self.langfuse:
             try:
-                prompts = self.langfuse.list_prompts()
-                return [
-                    {"name": p.name, "labels": getattr(p, "labels", []), "versions": getattr(p, "versions", [])}
-                    for p in (prompts.data if hasattr(prompts, "data") else [])
-                ]
+                api = getattr(self.langfuse, "api", None)
+                if api and hasattr(api, "prompts"):
+                    result = api.prompts.list()
+                    prompts = result.data if hasattr(result, "data") else []
+                    return [
+                        {"name": p.name, "labels": getattr(p, "labels", []), "versions": getattr(p, "versions", [])}
+                        for p in prompts
+                    ]
             except Exception as e:
                 logger.error(f"Failed to list Langfuse prompts: {e}")
         return []
@@ -209,13 +253,14 @@ class LangfuseInstrumentation:
         """Register a prompt in Langfuse with optional labels."""
         if self.enabled and self.langfuse:
             try:
+                sanitized = [l[:36] for l in (labels or ["draft"])]
                 result = self.langfuse.create_prompt(
                     name=name,
                     prompt=prompt,
-                    labels=labels or ["draft"],
+                    labels=sanitized,
                     type="text",
                 )
-                return {"name": name, "version": getattr(result, "version", None), "labels": labels or ["draft"]}
+                return {"name": name, "version": getattr(result, "version", None), "labels": sanitized}
             except Exception as e:
                 logger.error(f"Failed to create Langfuse prompt '{name}': {e}")
         return None
@@ -224,7 +269,8 @@ class LangfuseInstrumentation:
         """Update a prompt version's label (e.g., set to 'production')."""
         if self.enabled and self.langfuse:
             try:
-                self.langfuse.update_prompt(name=name, version=version, new_label=new_label)
+                sanitized_label = (new_label or "")[:36]
+                self.langfuse.update_prompt(name=name, version=version, new_label=sanitized_label)
                 return True
             except Exception as e:
                 logger.error(f"Failed to update Langfuse prompt label: {e}")
@@ -244,10 +290,8 @@ class LangfuseTraceWrapper:
         self.metadata = metadata or {}
 
     def record_child_span(self, name, input_data=None, latency_ms=None, error=None, output_data=None):
-        """Record a child span linked to the root span of this trace."""
+        """Record a child span nested under the root span."""
         try:
-            # Create child on root_span so it appears nested under the trace,
-            # not as an orphan top-level span.
             child = self.root_span.start_span(
                 name=name,
                 input=input_data,
@@ -262,7 +306,7 @@ class LangfuseTraceWrapper:
             logger.error(f"Failed to record Langfuse child span: {e}")
 
     def span(self, name: str, input: Optional[Dict] = None):
-        """Create a child span linked to root (compatibility method)."""
+        """Create a child span on the root span."""
         try:
             return self.root_span.start_span(name=name, input=input)
         except Exception:
@@ -271,15 +315,21 @@ class LangfuseTraceWrapper:
     def score(self, name: str, value: float, comment: Optional[str] = None):
         """Record a score on this trace."""
         try:
-            self.langfuse.create_score(
+            self.root_span.score_trace(
                 name=name,
                 value=value,
-                trace_id=self.trace_id,
                 comment=comment,
                 data_type="NUMERIC",
             )
         except Exception as e:
             logger.error(f"Failed to record score: {e}")
+
+    def update(self, **kwargs):
+        """Update trace-level fields (input, output, tags)."""
+        try:
+            self.root_span.update_trace(**kwargs)
+        except Exception as e:
+            logger.error(f"Failed to update Langfuse trace: {e}")
 
     def end(self):
         """End the root span."""

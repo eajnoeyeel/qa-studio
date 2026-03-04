@@ -102,6 +102,19 @@ class MultiCompareService:
                         model_version=cfg.model_version,
                         docs_version=request.docs_version,
                     )
+                    if result.get("error") or not result.get("evaluation_id"):
+                        logger.warning(
+                            "Config %s produced incomplete evaluation for item %s: %s",
+                            cfg.config_id,
+                            item.id,
+                            result.get("error", "missing evaluation_id"),
+                        )
+                        result = {
+                            "gate_failed": True,
+                            "scores": {},
+                            "tags": [],
+                            "error": result.get("error", "missing evaluation_id"),
+                        }
                     item_results[cfg.config_id] = result
                 except Exception as e:
                     logger.warning(f"Config {cfg.config_id} failed on item {item.id}: {e}")

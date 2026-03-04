@@ -1,6 +1,7 @@
 """OpenAI LLM provider."""
 import json
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import LLMProvider, LLMMessage, LLMResponse
 from ..core.taxonomy import TaxonomyLabel, REQUIRED_SLOTS, LABEL_DESCRIPTIONS
@@ -15,13 +16,22 @@ class OpenAIProvider(LLMProvider):
         self.default_model = default_model
         self._client = None
         self.instrumentation = instrumentation  # LangfuseInstrumentation for prompt registry
+        # Avoid repeated prompt-refresh misses from hammering Langfuse and logs.
+        self._missing_prompt_until: Dict[Tuple[str, str], float] = {}
+        self._missing_prompt_ttl_seconds = 60.0
 
     def _get_prompt_text(self, name: str, label: str = "production") -> Optional[str]:
         """Fetch compiled prompt text from Langfuse, returns None on failure."""
+        key = (name, label)
+        if self._missing_prompt_until.get(key, 0.0) > time.monotonic():
+            return None
+
         if self.instrumentation:
             prompt_obj = self.instrumentation.get_prompt(name, label=label)
             if prompt_obj and hasattr(prompt_obj, "prompt"):
+                self._missing_prompt_until.pop(key, None)
                 return prompt_obj.prompt
+            self._missing_prompt_until[key] = time.monotonic() + self._missing_prompt_ttl_seconds
         return None
 
     @property
@@ -81,6 +91,8 @@ class OpenAIProvider(LLMProvider):
                 for lbl in labels
             )
             prompt = langfuse_prompt.replace("{{labels}}", labels_str).replace("{{text}}", text)
+            if "json" not in prompt.lower():
+                prompt += "\n\nRespond with a JSON object."
         else:
             # Hardcoded fallback
             prompt = f"""Classify the following text/question into one of these task categories.
@@ -155,6 +167,9 @@ JSON Response:"""
                 .replace("{{question}}", question)
                 .replace("{{response}}", response)
             )
+            # OpenAI json_object mode requires the word "json" in the prompt
+            if "json" not in prompt.lower():
+                prompt += "\n\nRespond with a JSON object."
         else:
             # Hardcoded fallback
             prompt = f"""You are a QA evaluator for AI-generated responses.

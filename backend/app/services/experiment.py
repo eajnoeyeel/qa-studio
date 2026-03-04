@@ -86,7 +86,7 @@ class ExperimentService:
         queue_repo = HumanQueueRepository(self.db_session)
         results = []
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
 
         async def process_one(item):
             async with semaphore:
@@ -98,7 +98,6 @@ class ExperimentService:
                         model_version=config_a.model_version,
                     )
 
-                    # Run both arms concurrently
                     result_a, result_b = await asyncio.gather(
                         self.pipeline_a.process_item(
                             item,
@@ -131,6 +130,16 @@ class ExperimentService:
             if entry is None:
                 continue
             item_id, result_a, result_b = entry
+            eval_a_id = result_a.get("evaluation_id")
+            eval_b_id = result_b.get("evaluation_id")
+            if result_a.get("error") or result_b.get("error") or not eval_a_id or not eval_b_id:
+                logger.warning(
+                    "Skipping experiment result for item %s due to incomplete evaluation output (A: %s, B: %s)",
+                    item_id,
+                    "ok" if eval_a_id and not result_a.get("error") else "failed",
+                    "ok" if eval_b_id and not result_b.get("error") else "failed",
+                )
+                continue
             exp_result = self._compare_results(item_id, result_a, result_b, sampling_config)
             result_repo.create(experiment.id, exp_result)
             results.append(exp_result)
@@ -138,7 +147,7 @@ class ExperimentService:
             if exp_result.is_ambiguous:
                 queue_repo.create(
                     item_id=item_id,
-                    evaluation_id=result_a.get("evaluation_id", ""),
+                    evaluation_id=eval_a_id,
                     reason=HumanQueueReason.AB_AMBIGUOUS,
                     priority=50,
                 )
@@ -220,8 +229,8 @@ class ExperimentService:
 
         return ExperimentResult(
             item_id=item_id,
-            eval_a_id=result_a.get("evaluation_id", ""),
-            eval_b_id=result_b.get("evaluation_id", ""),
+            eval_a_id=result_a["evaluation_id"],
+            eval_b_id=result_b["evaluation_id"],
             score_diff=score_diff,
             gate_diff=gate_diff,
             is_ambiguous=is_ambiguous,
