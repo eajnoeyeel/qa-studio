@@ -4,12 +4,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey, Integer,
-    String, Text, create_engine, Enum as SQLEnum
+    String, Text, UniqueConstraint, create_engine, Enum as SQLEnum
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
-from .schemas import DatasetSplit, HumanQueueReason
+from .schemas import DatasetSplit, EvaluationKind, HumanQueueReason
 
 
 Base = declarative_base()
@@ -62,12 +62,22 @@ class EvalItemModel(Base):
 class EvaluationModel(Base):
     """Evaluation database model."""
     __tablename__ = "evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "prompt_version", "model_version", "docs_version",
+            name="uq_evaluation_version_triple",
+        ),
+    )
 
     id = Column(String, primary_key=True)
     item_id = Column(String, ForeignKey("eval_items.id"), nullable=False, index=True)
     prompt_version = Column(String, nullable=False, index=True)
     model_version = Column(String, nullable=False, index=True)
     docs_version = Column(String, nullable=False, index=True)
+    evaluation_kind = Column(SQLEnum(EvaluationKind), default=EvaluationKind.DATASET, index=True)
+    evaluated_question = Column(Text, nullable=True)
+    evaluated_response = Column(Text, nullable=True)
+    evaluated_system_prompt = Column(Text, nullable=True)
     classification_json = Column(Text, nullable=True)  # JSON
     trace_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -151,7 +161,7 @@ class HumanReviewModel(Base):
     __tablename__ = "human_reviews"
 
     id = Column(String, primary_key=True)
-    queue_item_id = Column(String, ForeignKey("human_queue.id"), nullable=False)
+    queue_item_id = Column(String, ForeignKey("human_queue.id"), nullable=False, unique=True)
     evaluation_id = Column(String, ForeignKey("evaluations.id"), nullable=False)
     reviewer_id = Column(String, nullable=True)
     gold_label = Column(String, nullable=True)
@@ -242,6 +252,7 @@ class FailurePatternModel(Base):
     frequency = Column(Integer, nullable=False)
     avg_scores_json = Column(Text, nullable=True)    # JSON {score_type: avg}
     taxonomy_labels_json = Column(Text, nullable=True)  # JSON {label: count}
+    dataset_split = Column(SQLEnum(DatasetSplit), nullable=True, index=True)
     prompt_version = Column(String, nullable=True, index=True)
     model_version = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -305,7 +316,8 @@ class PromptProposalModel(Base):
     __tablename__ = "prompt_proposals"
 
     id = Column(String, primary_key=True)
-    prompt_name = Column(String, nullable=False, index=True)    # "judge_gate", "classify"
+    prompt_name = Column(String, nullable=False, index=True)    # "system_prompt", "classify"
+    prompt_type = Column(String, nullable=False, default="system_prompt")  # "system_prompt" | "judge_prompt"
     current_version = Column(String, nullable=True)
     proposed_prompt = Column(Text, nullable=False)
     proposed_langfuse_version = Column(String, nullable=True)

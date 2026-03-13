@@ -21,6 +21,11 @@ class HumanQueueReason(str, Enum):
     MANUAL = "manual"
 
 
+class EvaluationKind(str, Enum):
+    DATASET = "dataset"
+    EXPERIMENT = "experiment"
+
+
 # ============== EvalItem ==============
 
 class EvalItemBase(BaseModel):
@@ -150,6 +155,10 @@ class EvaluationCreate(BaseModel):
     prompt_version: str
     model_version: str
     docs_version: str
+    evaluation_kind: EvaluationKind = EvaluationKind.DATASET
+    evaluated_question: Optional[str] = None
+    evaluated_response: Optional[str] = None
+    evaluated_system_prompt: Optional[str] = None
 
 
 class EvaluationInDB(BaseModel):
@@ -159,6 +168,10 @@ class EvaluationInDB(BaseModel):
     prompt_version: str
     model_version: str
     docs_version: str
+    evaluation_kind: EvaluationKind = EvaluationKind.DATASET
+    evaluated_question: Optional[str] = None
+    evaluated_response: Optional[str] = None
+    evaluated_system_prompt: Optional[str] = None
     classification: Optional[ClassificationResult] = None
     judge_output: Optional[JudgeOutput] = None
     trace_id: Optional[str] = None
@@ -358,6 +371,7 @@ class FailurePattern(BaseModel):
     frequency: int
     avg_scores: Dict[str, float] = {}
     taxonomy_labels: Dict[str, int] = {}  # label -> count
+    dataset_split: Optional[DatasetSplit] = None
     prompt_version: Optional[str] = None
     model_version: Optional[str] = None
     created_at: datetime
@@ -369,12 +383,14 @@ class PatternAnalysisResult(BaseModel):
     patterns_found: int
     top_patterns: List[FailurePattern]
     total_evaluations_analyzed: int
+    dataset_split: Optional[DatasetSplit] = None
     prompt_version: Optional[str] = None
     model_version: Optional[str] = None
 
 
 class PatternAnalysisRequest(BaseModel):
     """Request to run pattern analysis."""
+    dataset_split: Optional[DatasetSplit] = None
     prompt_version: Optional[str] = None
     model_version: Optional[str] = None
     min_frequency: int = Field(default=2, ge=1)
@@ -392,12 +408,14 @@ class PromptSuggestion(BaseModel):
     rationale: str
     target_patterns: List[str]  # Pattern IDs this targets
     expected_improvement: str
+    coverage: Dict[str, str] = {}
     created_at: datetime
 
 
 class SuggestionGenerateRequest(BaseModel):
     """Request to generate prompt suggestions."""
-    prompt_name: str = "judge_gate"
+    prompt_name: str = "system_prompt"
+    dataset_split: Optional[DatasetSplit] = None
     top_k_patterns: int = Field(default=5, ge=1, le=20)
     register_in_langfuse: bool = False
 
@@ -457,9 +475,29 @@ class ProposalStatus(str, Enum):
 class PromptProposalCreate(BaseModel):
     """Schema for creating a prompt proposal."""
     prompt_name: str
+    prompt_type: str = "system_prompt"  # "system_prompt" | "judge_prompt" — prevents accidental judge modifications
     current_version: Optional[str] = None
     proposed_prompt: str
     created_by: str = "auto"
+
+
+class ImprovementCycleRequest(BaseModel):
+    """Request to run a self-improvement cycle."""
+    dataset_split: DatasetSplit = DatasetSplit.DEV
+    limit: Optional[int] = Field(50, ge=1, le=5000)
+    prompt_name: str = "system_prompt"
+    top_k_patterns: int = Field(default=5, ge=1, le=20)
+
+
+class ImprovementCycleResponse(BaseModel):
+    """Response from a self-improvement cycle."""
+    proposal_id: str
+    patterns_found: int
+    suggestion_rationale: str
+    experiment_id: Optional[str] = None
+    langfuse_experiment_url: Optional[str] = None
+    avg_scores_baseline: Dict[str, float] = {}
+    avg_scores_candidate: Dict[str, float] = {}
 
 
 class PromptProposalInDB(BaseModel):
