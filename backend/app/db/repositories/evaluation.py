@@ -16,6 +16,7 @@ from ...models.schemas import (
     DatasetSplit,
     EvalItemCreate,
     EvalItemInDB,
+    EvaluationKind,
     EvaluationCreate,
     EvaluationInDB,
     JudgeOutput,
@@ -168,12 +169,17 @@ class EvalItemRepository:
             created_at=model.created_at,
         )
 
-    def get_summary_stats(self, split: DatasetSplit) -> Dict:
+    def get_summary_stats(
+        self,
+        split: DatasetSplit,
+        evaluation_kind: EvaluationKind = EvaluationKind.DATASET,
+    ) -> Dict:
         """Get aggregated evaluation stats for a split using JOINed queries."""
         total_evals = (
             self.db.query(func.count(EvaluationModel.id))
             .join(EvalItemModel, EvalItemModel.id == EvaluationModel.item_id)
             .filter(EvalItemModel.split == split)
+            .filter(EvaluationModel.evaluation_kind == evaluation_kind)
             .scalar()
             or 0
         )
@@ -195,6 +201,7 @@ class EvalItemRepository:
             .join(EvaluationModel, EvaluationModel.id == JudgeOutputModel.evaluation_id)
             .join(EvalItemModel, EvalItemModel.id == EvaluationModel.item_id)
             .filter(EvalItemModel.split == split)
+            .filter(EvaluationModel.evaluation_kind == evaluation_kind)
             .all()
         )
 
@@ -292,6 +299,10 @@ class EvaluationRepository:
             prompt_version=evaluation.prompt_version,
             model_version=evaluation.model_version,
             docs_version=evaluation.docs_version,
+            evaluation_kind=evaluation.evaluation_kind,
+            evaluated_question=evaluation.evaluated_question,
+            evaluated_response=evaluation.evaluated_response,
+            evaluated_system_prompt=evaluation.evaluated_system_prompt,
             trace_id=trace_id,
         )
         self.db.add(model)
@@ -339,6 +350,10 @@ class EvaluationRepository:
             prompt_version=model.prompt_version,
             model_version=model.model_version,
             docs_version=model.docs_version,
+            evaluation_kind=model.evaluation_kind,
+            evaluated_question=model.evaluated_question,
+            evaluated_response=model.evaluated_response,
+            evaluated_system_prompt=model.evaluated_system_prompt,
             classification=classification,
             judge_output=judge,
             trace_id=model.trace_id,

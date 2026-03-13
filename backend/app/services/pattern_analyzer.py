@@ -3,12 +3,12 @@ import uuid
 import logging
 from collections import defaultdict
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from ..models.database import JudgeOutputModel, EvaluationModel, json_deserializer
-from ..models.schemas import FailurePattern, PatternAnalysisResult
+from ..models.database import EvalItemModel, JudgeOutputModel, EvaluationModel, json_deserializer
+from ..models.schemas import DatasetSplit, EvaluationKind, PatternAnalysisResult
 from ..db.repository import FailurePatternRepository
 
 logger = logging.getLogger(__name__)
@@ -22,8 +22,11 @@ class PatternAnalyzer:
 
     async def analyze(
         self,
+        dataset_split: Optional[DatasetSplit] = None,
         prompt_version: Optional[str] = None,
         model_version: Optional[str] = None,
+        evaluation_kind: EvaluationKind = EvaluationKind.DATASET,
+        item_ids: Optional[List[str]] = None,
         min_frequency: int = 2,
         top_k: int = 10,
     ) -> PatternAnalysisResult:
@@ -43,10 +46,13 @@ class PatternAnalyzer:
             EvaluationModel.item_id,
             func.max(EvaluationModel.created_at).label("max_created"),
         )
+        latest_subq = latest_subq.filter(EvaluationModel.evaluation_kind == evaluation_kind)
         if prompt_version:
             latest_subq = latest_subq.filter(EvaluationModel.prompt_version == prompt_version)
         if model_version:
             latest_subq = latest_subq.filter(EvaluationModel.model_version == model_version)
+        if item_ids:
+            latest_subq = latest_subq.filter(EvaluationModel.item_id.in_(item_ids))
         latest_subq = latest_subq.group_by(EvaluationModel.item_id).subquery()
 
         query = self.db.query(EvaluationModel).join(
@@ -54,10 +60,17 @@ class PatternAnalyzer:
             (EvaluationModel.item_id == latest_subq.c.item_id)
             & (EvaluationModel.created_at == latest_subq.c.max_created),
         )
+        query = query.filter(EvaluationModel.evaluation_kind == evaluation_kind)
         if prompt_version:
             query = query.filter(EvaluationModel.prompt_version == prompt_version)
         if model_version:
             query = query.filter(EvaluationModel.model_version == model_version)
+        if item_ids:
+            query = query.filter(EvaluationModel.item_id.in_(item_ids))
+        if dataset_split is not None:
+            query = query.join(EvalItemModel, EvalItemModel.id == EvaluationModel.item_id).filter(
+                EvalItemModel.split == dataset_split
+            )
         evaluations = query.all()
 
         if not evaluations:
@@ -66,6 +79,7 @@ class PatternAnalyzer:
                 patterns_found=0,
                 top_patterns=[],
                 total_evaluations_analyzed=0,
+                dataset_split=dataset_split,
                 prompt_version=prompt_version,
                 model_version=model_version,
             )
@@ -83,18 +97,20 @@ class PatternAnalyzer:
         repo = FailurePatternRepository(self.db)
         if sorted_patterns:
             for p in sorted_patterns:
+                p["dataset_split"] = dataset_split
                 p["prompt_version"] = prompt_version
                 p["model_version"] = model_version
             repo.create_batch(sorted_patterns, analysis_run_id)
 
         # Build return value
-        top_patterns = repo.get_latest(top_k)
+        top_patterns = repo.get_latest(top_k, dataset_split=dataset_split)
 
         return PatternAnalysisResult(
             analysis_run_id=analysis_run_id,
             patterns_found=len(sorted_patterns),
             top_patterns=top_patterns,
             total_evaluations_analyzed=len(evaluations),
+            dataset_split=dataset_split,
             prompt_version=prompt_version,
             model_version=model_version,
         )
