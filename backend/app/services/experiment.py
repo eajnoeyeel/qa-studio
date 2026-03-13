@@ -7,7 +7,7 @@ import logging
 
 from ..models.schemas import (
     ExperimentCreate, ExperimentInDB, ExperimentResult,
-    ExperimentSummary, ExperimentConfig, HumanQueueReason, DatasetSplit
+    ExperimentSummary, ExperimentConfig, HumanQueueReason, DatasetSplit, EvaluationKind
 )
 from ..core.rubric import SAMPLING_RULES
 from ..db.repository import (
@@ -70,16 +70,34 @@ class ExperimentService:
         logger.info(f"Running experiment {experiment.id} on {len(items)} items")
 
         # Create trace for experiment
+        exp_session_id = f"experiment_{experiment.id}"
         trace = self.instrumentation.create_trace(
             trace_id=f"exp_{experiment.id}",
-            name=f"experiment_{name}",
+            name=f"experiment · {name}",
             tags=[
+                "experiment",
                 f"split:{dataset_split.value}",
                 f"docs:{docs_version}",
                 f"config_a:{config_a.prompt_version}_{config_a.model_version}",
                 f"config_b:{config_b.prompt_version}_{config_b.model_version}",
             ],
+            metadata={
+                "experiment_id": experiment.id,
+                "docs_version": docs_version,
+            },
+            session_id=exp_session_id,
+            user_id=self.pipeline_a.provider.name,
+            input={
+                "config_a": {"prompt": config_a.prompt_version, "model": config_a.model_version},
+                "config_b": {"prompt": config_b.prompt_version, "model": config_b.model_version},
+                "item_count": len(items),
+                "split": dataset_split.value,
+            },
         )
+
+        # Set session_id on both pipelines so per-item traces group under experiment
+        self.pipeline_a.session_id = exp_session_id
+        self.pipeline_b.session_id = exp_session_id
 
         # Process items with both configs
         result_repo = ExperimentResultRepository(self.db_session)
@@ -106,6 +124,7 @@ class ExperimentService:
                             docs_version=docs_version,
                             sampling_config=sampling_config,
                             pre_classification=pre_classification,
+                            evaluation_kind=EvaluationKind.EXPERIMENT,
                         ),
                         self.pipeline_b.process_item(
                             item,
@@ -114,6 +133,7 @@ class ExperimentService:
                             docs_version=docs_version,
                             sampling_config=sampling_config,
                             pre_classification=pre_classification,
+                            evaluation_kind=EvaluationKind.EXPERIMENT,
                         ),
                     )
 
@@ -166,6 +186,17 @@ class ExperimentService:
                 "human_queue_rate": summary.human_queue_rate,
             },
         )
+
+        # Set experiment output on trace
+        if hasattr(trace, 'update'):
+            trace.update(output={
+                "total_items": summary.total_items,
+                "gate_fail_rate_a": summary.gate_fail_rate_a,
+                "gate_fail_rate_b": summary.gate_fail_rate_b,
+                "avg_scores_a": summary.avg_scores_a,
+                "avg_scores_b": summary.avg_scores_b,
+                "human_queue_rate": summary.human_queue_rate,
+            })
 
         # Update experiment with summary
         experiment = exp_repo.update_summary(experiment.id, summary)

@@ -6,9 +6,11 @@ from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 import logging
 
+from sqlalchemy.exc import IntegrityError
+
 from ..models.schemas import (
     EvalItemInDB, EvaluationCreate, EvaluationInDB, ClassificationResult,
-    JudgeOutput, GateResult, ScoreResult, HumanQueueReason, RAGResult
+    EvaluationKind, JudgeOutput, GateResult, ScoreResult, HumanQueueReason, RAGResult
 )
 from ..core.taxonomy import TaxonomyLabel, FailureTag
 from ..core.rubric import SAMPLING_RULES
@@ -33,12 +35,14 @@ class EvaluationPipeline:
         instrumentation: LangfuseInstrumentation,
         db_session,
         session_factory=None,
+        session_id: Optional[str] = None,
     ):
         self.provider = provider
         self.retriever = retriever
         self.instrumentation = instrumentation
         self.db_session = db_session
         self.session_factory = session_factory
+        self.session_id = session_id
         self.seen_tags = self._global_seen_tags
 
     async def process_item(
@@ -49,6 +53,11 @@ class EvaluationPipeline:
         docs_version: str,
         sampling_config: Optional[Dict[str, Any]] = None,
         pre_classification: Optional[ClassificationResult] = None,
+        response_override: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
+        evaluation_kind: EvaluationKind = EvaluationKind.DATASET,
+        classification_prompt_label: str = "production",
+        judge_prompt_label: str = "production",
     ) -> Dict[str, Any]:
         """Process a single item through the evaluation pipeline."""
         from ..db.repository import (
@@ -64,11 +73,19 @@ class EvaluationPipeline:
             session = self.db_session
             owns_session = False
 
+        active_question = item.question
+        active_response = response_override if response_override is not None else item.response
+        active_system_prompt = (
+            system_prompt_override
+            if system_prompt_override is not None
+            else item.system_prompt
+        )
+
         # Create trace
         trace_id = f"eval_{item.id}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         trace = self.instrumentation.create_trace(
             trace_id=trace_id,
-            name=f"evaluate_item_{item.id}",
+            name=f"evaluate · {item.id[:8]}",
             tags=[
                 f"split:{item.split.value}",
                 f"prompt:{prompt_version}",
@@ -77,10 +94,16 @@ class EvaluationPipeline:
             ],
             metadata={
                 "item_id": item.id,
+                "scenario_id": getattr(item, "scenario_id", None),
+                "candidate_source": getattr(item, "candidate_source", None),
                 "prompt_version": prompt_version,
                 "model_version": model_version,
                 "docs_version": docs_version,
-            }
+                "evaluation_kind": evaluation_kind.value,
+            },
+            session_id=self.session_id,
+            user_id=self.provider.name,
+            input={"question": active_question[:500], "response": active_response[:500]},
         )
 
         start_time = time.time()
@@ -99,7 +122,12 @@ class EvaluationPipeline:
             # --- Compute phase (no DB writes, no locks held) ---
 
             # Step 1: Prepare text
-            prepared_text = await self._prepare(item, trace)
+            prepared_text = await self._prepare(
+                question=active_question,
+                response=active_response,
+                system_prompt=active_system_prompt,
+                trace=trace,
+            )
 
             # Step 2: Mask PII
             masked_text = await self._mask_pii(prepared_text, trace)
@@ -111,14 +139,22 @@ class EvaluationPipeline:
                 classification = await self._classify(
                     masked_text,
                     trace,
-                    prompt_version=prompt_version,
+                    prompt_label=classification_prompt_label,
                     model_version=model_version,
                 )
 
-            # Extract masked question/response for downstream steps
+            # Append taxonomy tag to trace
+            if hasattr(trace, 'update'):
+                trace.update(tags=[f"taxonomy:{classification.label}"])
+
+            # Extract masked question/response/system_prompt for downstream steps
             # so PII-masked text is used for RAG and judge, not raw input
-            masked_question = await self._mask_pii(item.question, trace)
-            masked_response = await self._mask_pii(item.response, trace)
+            masked_question = await self._mask_pii(active_question, trace)
+            masked_response = await self._mask_pii(active_response, trace)
+            masked_system_prompt = (
+                await self._mask_pii(active_system_prompt, trace)
+                if active_system_prompt else None
+            )
 
             # Step 4: RAG Retrieve
             rag_result = await self._rag_retrieve(
@@ -135,8 +171,8 @@ class EvaluationPipeline:
                 masked_response,
                 rag_result,
                 trace,
-                system_prompt=item.system_prompt,
-                prompt_version=prompt_version,
+                system_prompt=masked_system_prompt,
+                prompt_label=judge_prompt_label,
                 model_version=model_version,
             )
 
@@ -155,6 +191,10 @@ class EvaluationPipeline:
                 prompt_version=prompt_version,
                 model_version=model_version,
                 docs_version=docs_version,
+                evaluation_kind=evaluation_kind,
+                evaluated_question=active_question,
+                evaluated_response=active_response,
+                evaluated_system_prompt=active_system_prompt,
                 trace_id=trace_id,
                 classification=classification,
                 judge_output=judge_output,
@@ -168,7 +208,8 @@ class EvaluationPipeline:
                     trace,
                     f"score_{score.score_type}",
                     score.score,
-                    score.justification
+                    score.justification,
+                    score_id=f"{trace_id}-score_{score.score_type}",
                 )
 
             for gate in judge_output.gates:
@@ -176,7 +217,8 @@ class EvaluationPipeline:
                     trace,
                     f"gate_{gate.gate_type}",
                     1.0 if gate.passed else 0.0,
-                    gate.reason
+                    gate.reason,
+                    score_id=f"{trace_id}-gate_{gate.gate_type}",
                 )
 
             # Compile result
@@ -187,18 +229,29 @@ class EvaluationPipeline:
             result["classification"] = classification.label
             result["human_queued"] = queued_for_human
 
-            # Update trace with input/output so Langfuse UI shows meaningful data
+            # Update trace with gate tag and output
             if hasattr(trace, 'update'):
+                gate_tag = "gate:pass" if judge_output.gate_passed else "gate:fail"
                 trace.update(
-                    input={"question": item.question[:500], "response": item.response[:500]},
+                    tags=[gate_tag],
                     output={
-                        "gate_passed": judge_output.gate_passed,
+                        "verdict": "pass" if judge_output.gate_passed else "fail",
                         "scores": result["scores"],
                         "failure_tags": judge_output.failure_tags,
                         "classification": classification.label,
                         "human_queued": queued_for_human,
                     },
                 )
+
+        except IntegrityError as ie:
+            session.rollback()
+            err_msg = str(ie.orig).lower() if ie.orig else str(ie).lower()
+            if "uq_evaluation_version_triple" in err_msg or "unique" in err_msg:
+                logger.info(f"Duplicate evaluation for item {item.id} (concurrent run), skipping")
+                result["error"] = "duplicate"
+            else:
+                logger.error(f"Integrity error processing item {item.id}: {ie}")
+                result["error"] = str(ie)
 
         except Exception as e:
             session.rollback()
@@ -213,11 +266,15 @@ class EvaluationPipeline:
             result["error"] = str(e)
             if hasattr(trace, 'update'):
                 trace.update(
-                    input={"question": item.question[:500]},
+                    input={"item_id": item.id},
                     output={"error": str(e)},
                 )
 
         finally:
+            # End root span so trace-level attributes (name, input, output,
+            # tags, session, user) are exported to Langfuse.
+            if hasattr(trace, 'end'):
+                trace.end()
             # Don't flush per-item — Langfuse SDK batches internally.
             # Caller (experiment/evaluate endpoint) flushes once at the end.
             if owns_session:
@@ -233,6 +290,10 @@ class EvaluationPipeline:
         prompt_version: str,
         model_version: str,
         docs_version: str,
+        evaluation_kind: EvaluationKind,
+        evaluated_question: str,
+        evaluated_response: str,
+        evaluated_system_prompt: Optional[str],
         trace_id: str,
         classification: ClassificationResult,
         judge_output: JudgeOutput,
@@ -247,7 +308,8 @@ class EvaluationPipeline:
         queued_for_human = False
 
         item_repo = EvalItemRepository(session)
-        item_repo.update_masked(item.id, masked_text, commit=False)
+        if evaluation_kind == EvaluationKind.DATASET:
+            item_repo.update_masked(item.id, masked_text, commit=False)
 
         eval_repo = EvaluationRepository(session)
         evaluation = eval_repo.create(
@@ -256,6 +318,10 @@ class EvaluationPipeline:
                 prompt_version=prompt_version,
                 model_version=model_version,
                 docs_version=docs_version,
+                evaluation_kind=evaluation_kind,
+                evaluated_question=evaluated_question,
+                evaluated_response=evaluated_response,
+                evaluated_system_prompt=evaluated_system_prompt,
             ),
             trace_id=trace_id,
             commit=False,
@@ -266,7 +332,11 @@ class EvaluationPipeline:
         judge_repo = JudgeOutputRepository(session)
         judge_repo.create(evaluation.id, judge_output, commit=False)
 
-        if should_queue and queue_reason is not None:
+        if (
+            evaluation_kind == EvaluationKind.DATASET
+            and should_queue
+            and queue_reason is not None
+        ):
             queue_repo = HumanQueueRepository(session)
             queue_repo.create(
                 item_id=item.id,
@@ -282,25 +352,36 @@ class EvaluationPipeline:
 
     async def classify_item(self, item, trace, prompt_version, model_version):
         """Classify an item (public, for sharing across A/B arms)."""
-        prepared = await self._prepare(item, trace)
+        prepared = await self._prepare(
+            question=item.question,
+            response=item.response,
+            system_prompt=item.system_prompt,
+            trace=trace,
+        )
         masked = await self._mask_pii(prepared, trace)
-        return await self._classify(masked, trace, prompt_version, model_version)
+        return await self._classify(masked, trace, "production", model_version)
 
-    async def _prepare(self, item: EvalItemInDB, trace) -> str:
+    async def _prepare(
+        self,
+        question: str,
+        response: str,
+        system_prompt: Optional[str],
+        trace,
+    ) -> str:
         """Prepare text from item fields."""
         start = time.time()
 
         parts = []
-        if item.system_prompt:
-            parts.append(f"[SYSTEM]: {item.system_prompt}")
-        parts.append(f"[QUESTION]: {item.question}")
-        parts.append(f"[RESPONSE]: {item.response}")
+        if system_prompt:
+            parts.append(f"[SYSTEM]: {system_prompt}")
+        parts.append(f"[QUESTION]: {question}")
+        parts.append(f"[RESPONSE]: {response}")
         prepared = "\n\n".join(parts)
 
         self.instrumentation.record_span(
             trace,
             "prepare",
-            input_data={"has_system_prompt": bool(item.system_prompt)},
+            input_data={"has_system_prompt": bool(system_prompt)},
             output_data={"text_length": len(prepared)},
             latency_ms=(time.time() - start) * 1000,
         )
@@ -356,7 +437,7 @@ class EvaluationPipeline:
         self,
         text: str,
         trace,
-        prompt_version: str,
+        prompt_label: str,
         model_version: str,
     ) -> ClassificationResult:
         """Classify the item."""
@@ -366,12 +447,22 @@ class EvaluationPipeline:
         result = await self.provider.classify(
             text,
             labels,
-            prompt_label=prompt_version,
+            prompt_label=prompt_label,
             model=model_version,
         )
 
+        # Validate label against taxonomy; fall back to open_qa if unknown
+        returned_label = result["label"]
+        valid_labels = set(labels)
+        if returned_label not in valid_labels:
+            logger.warning(
+                "Unknown classification label '%s', falling back to 'open_qa'",
+                returned_label,
+            )
+            returned_label = TaxonomyLabel.OPEN_QA.value
+
         classification = ClassificationResult(
-            label=result["label"],
+            label=returned_label,
             confidence=result.get("confidence", 0.5),
             required_slots=result.get("required_slots", []),
             detected_slots=result.get("detected_slots", {}),
@@ -431,7 +522,7 @@ class EvaluationPipeline:
         rag_result: RAGResult,
         trace,
         system_prompt: Optional[str] = None,
-        prompt_version: str = "production",
+        prompt_label: str = "production",
         model_version: str = "mock",
     ) -> JudgeOutput:
         """Evaluate the response."""
@@ -449,9 +540,13 @@ class EvaluationPipeline:
             rubric={},  # Rubric is built into provider
             context=context,
             system_prompt=system_prompt,
-            prompt_label=prompt_version,
+            prompt_label=prompt_label,
             model=model_version,
         )
+
+        # Extract usage metadata injected by providers
+        usage = result.pop("_usage", None)
+        model_name = result.pop("_model", None)
 
         # Convert to JudgeOutput
         gates = [GateResult(**g) for g in result["gates"]]
@@ -466,7 +561,7 @@ class EvaluationPipeline:
             rag_citations=result.get("rag_citations", [d.doc_id for d in rag_result.documents[:3]]),
         )
 
-        self.instrumentation.record_span(
+        self.instrumentation.record_generation(
             trace,
             "judge",
             input_data={
@@ -479,6 +574,8 @@ class EvaluationPipeline:
                 "total_score": judge_output.total_score,
                 "failure_tags": judge_output.failure_tags,
             },
+            model=model_name,
+            usage=usage,
             latency_ms=(time.time() - start) * 1000,
         )
 
