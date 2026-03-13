@@ -40,6 +40,18 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
+    async def generate(
+        self,
+        question: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1000,
+    ) -> LLMResponse:
+        """Generate a response for a user question under a system prompt."""
+        pass
+
+    @abstractmethod
     async def classify(
         self,
         text: str,

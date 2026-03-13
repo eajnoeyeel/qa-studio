@@ -1,7 +1,10 @@
 """OpenAI LLM provider."""
 import json
+import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .base import LLMProvider, LLMMessage, LLMResponse
 from ..core.taxonomy import TaxonomyLabel, REQUIRED_SLOTS, LABEL_DESCRIPTIONS
@@ -70,6 +73,25 @@ class OpenAIProvider(LLMProvider):
                 "completion_tokens": response.usage.completion_tokens,
             },
             raw=response,
+        )
+
+    async def generate(
+        self,
+        question: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1000,
+    ) -> LLMResponse:
+        """Generate an answer under the candidate system prompt."""
+        return await self.complete(
+            [
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=question),
+            ],
+            model=model or self.default_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
     async def classify(
@@ -222,22 +244,16 @@ JSON Response:"""
         )
 
         try:
-            return json.loads(llm_response.content)
+            result = json.loads(llm_response.content)
+            result["_usage"] = llm_response.usage
+            result["_model"] = llm_response.model
+            return result
         except json.JSONDecodeError:
-            # Return empty evaluation on parse failure
-            return {
-                "gates": [
-                    {"gate_type": "factual_safety", "passed": True, "reason": None, "evidence": None},
-                    {"gate_type": "hallucination", "passed": True, "reason": None, "evidence": None},
-                ],
-                "scores": [
-                    {"score_type": "instruction_following", "score": 3, "justification": "Parse error"},
-                    {"score_type": "reasoning_quality", "score": 3, "justification": "Parse error"},
-                    {"score_type": "completeness", "score": 3, "justification": "Parse error"},
-                    {"score_type": "clarity", "score": 3, "justification": "Parse error"},
-                ],
-                "failure_tags": [],
-                "summary_of_issue": "Evaluation parse error",
-                "what_to_fix": "Re-run evaluation",
-                "rag_citations": [],
-            }
+            logger.warning(
+                "LLM returned unparseable JSON for evaluate; "
+                "failing the evaluation instead of inserting neutral scores. "
+                "Response preview: %s", llm_response.content[:200],
+            )
+            raise ValueError(
+                f"LLM returned invalid JSON: {llm_response.content[:200]}"
+            )

@@ -32,15 +32,19 @@ class MockProvider(LLMProvider):
         last_message = messages[-1].content if messages else ""
 
         # Detect JSON-expecting prompts (e.g. suggestion generation)
-        if "JSON" in last_message and "suggested_prompt" in last_message:
+        if "JSON" in last_message and "system_prompt" in last_message:
             response = json.dumps({
-                "suggested_prompt": (
-                    "You are a QA evaluator. Evaluate the response for factual safety, "
-                    "hallucination, instruction following, reasoning quality, completeness, "
-                    "and clarity. Pay special attention to the most frequent failure patterns."
+                "system_prompt": (
+                    "You are a precise and thorough AI assistant. "
+                    "Answer only from supported information, state uncertainty when evidence is missing, "
+                    "and address every part of the user's request with clear reasoning."
                 ),
-                "rationale": "Mock suggestion: added emphasis on frequent failure patterns.",
+                "rationale": "Mock suggestion: added emphasis on avoiding common failure patterns.",
                 "expected_improvement": "Reduce top failure tags by ~10% (mock estimate).",
+                "coverage": {
+                    "hallucination": "Answer only from supported information and state uncertainty when evidence is missing.",
+                    "incomplete_answer": "Address every part of the user's request before finishing the answer.",
+                },
             })
         else:
             response = f"[Mock Response] Processed input of length {len(last_message)}"
@@ -49,6 +53,104 @@ class MockProvider(LLMProvider):
             content=response,
             model=model or "mock-model",
             usage={"prompt_tokens": 100, "completion_tokens": 50},
+        )
+
+    async def generate(
+        self,
+        question: str,
+        system_prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1000,
+    ) -> LLMResponse:
+        """Generate a deterministic answer influenced by the system prompt guidance."""
+        question_lower = question.lower()
+        prompt_lower = system_prompt.lower()
+
+        wants_grounded = any(
+            phrase in prompt_lower
+            for phrase in [
+                "only from supported information",
+                "only from the provided information",
+                "state uncertainty",
+                "do not guess",
+                "avoid hallucination",
+            ]
+        )
+        wants_complete = any(
+            phrase in prompt_lower
+            for phrase in [
+                "address every part",
+                "complete answers",
+                "fully answer",
+                "thorough",
+            ]
+        )
+        wants_reasoning = any(
+            phrase in prompt_lower
+            for phrase in [
+                "reasoning",
+                "reason step by step",
+                "explain why",
+                "logical",
+            ]
+        )
+        wants_structure = any(
+            phrase in prompt_lower
+            for phrase in [
+                "clear",
+                "organized",
+                "structure",
+                "step-by-step",
+                "step by step",
+            ]
+        )
+        wants_concise = "concise" in prompt_lower
+
+        if any(term in question_lower for term in ["weather", "tomorrow", "forecast", "latest", "current"]):
+            if wants_grounded:
+                response = (
+                    "I cannot verify that from the information available here. "
+                    "If you share a reliable source or the relevant context, I can summarize it without guessing."
+                )
+            else:
+                response = (
+                    "It will definitely be sunny tomorrow. "
+                    "That forecast is guaranteed and 100% accurate."
+                )
+        else:
+            intro = self._answer_core(question)
+            details: List[str] = []
+
+            if wants_reasoning or any(term in question_lower for term in ["why", "reason", "explain"]):
+                details.append(
+                    "Because the main idea follows directly from the question, the answer should connect the claim to the supporting explanation."
+                )
+            if wants_complete:
+                details.append(
+                    "It should cover the main concept, the key implication, and any practical takeaway that helps the user apply the answer."
+                )
+            if wants_grounded:
+                details.append(
+                    "If a detail cannot be supported with the available information, it should be stated as uncertain instead of invented."
+                )
+
+            if wants_structure and details:
+                response = "Step 1: " + intro
+                for idx, detail in enumerate(details, start=2):
+                    response += f" Step {idx}: {detail}"
+            else:
+                response = intro
+                if details:
+                    response += " " + " ".join(details)
+
+            if wants_concise and len(response) > 220:
+                response = response[:217].rstrip() + "..."
+
+        return LLMResponse(
+            content=response,
+            model=model or "mock-model",
+            usage={"prompt_tokens": 80, "completion_tokens": min(len(response) // 4 + 20, max_tokens)},
         )
 
     async def classify(
@@ -131,6 +233,25 @@ class MockProvider(LLMProvider):
             "missing_slots": missing_slots,
         }
 
+    def _answer_core(self, question: str) -> str:
+        """Produce a baseline answer skeleton from the question."""
+        question_lower = question.lower()
+        if "capital of france" in question_lower:
+            return "The capital of France is Paris, which is the country's political and cultural center."
+        if "recursion" in question_lower:
+            return "Recursion is a method where a function solves a problem by calling itself on a smaller version of the same problem."
+        if "gravity" in question_lower:
+            return "Gravity is the force that attracts objects with mass toward one another, which is why objects fall toward Earth."
+        if "photosynthesis" in question_lower:
+            return "Photosynthesis is the process plants use to convert light, water, and carbon dioxide into energy-rich sugars."
+        if "what is ai" in question_lower or question_lower.strip() == "what is ai?":
+            return "AI is the field of building systems that can perform tasks such as prediction, language use, and pattern recognition."
+        if "why" in question_lower:
+            return "The answer depends on the relationship between the cause, the mechanism, and the final outcome."
+        if "how" in question_lower:
+            return "The process can be understood by breaking it into the main steps and the purpose of each step."
+        return "The answer should focus on the main concept in the question and explain it in a direct way."
+
     async def evaluate(
         self,
         question: str,
@@ -141,20 +262,9 @@ class MockProvider(LLMProvider):
         prompt_label: str = "production",
         model: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Rule-based evaluation for Q/A responses.
-
-        prompt_label and model influence scores so that A/B experiments
-        produce meaningful (non-identical) results in mock mode.
-        """
+        """Rule-based evaluation for Q/A responses."""
         response_lower = response.lower()
         question_lower = question.lower()
-
-        # Version-aware bias: different prompt_label / model combos shift
-        # scores by a small deterministic offset so A/B comparisons show a
-        # real delta instead of always returning the same numbers.
-        import hashlib
-        version_seed = int(hashlib.sha256(f"{prompt_label}:{model or 'default'}".encode()).hexdigest(), 16) % 7
-        _version_bias = (version_seed - 3) * 0.25  # range ~ -0.75 .. +0.75
 
         # === GATES ===
         gates = []
@@ -221,8 +331,6 @@ class MockProvider(LLMProvider):
         if len(response_lower) < 20:
             if_score -= 2
         if_score = max(1, min(5, if_score))
-
-        if_score = max(1, min(5, round(if_score + _version_bias)))
         scores.append({
             "score_type": ScoreType.INSTRUCTION_FOLLOWING.value,
             "score": if_score,
@@ -240,7 +348,7 @@ class MockProvider(LLMProvider):
         if reasoning_count == 0 and len(response_lower) > 100:
             rq_score -= 1
 
-        rq_score = max(1, min(5, round(rq_score + _version_bias)))
+        rq_score = max(1, min(5, rq_score))
         scores.append({
             "score_type": ScoreType.REASONING_QUALITY.value,
             "score": rq_score,
@@ -261,7 +369,7 @@ class MockProvider(LLMProvider):
         if any(p in response_lower for p in ["step 1", "first,", "1.", "- "]):
             comp_score += 1
 
-        comp_score = max(1, min(5, round(comp_score + _version_bias)))
+        comp_score = max(1, min(5, comp_score))
         scores.append({
             "score_type": ScoreType.COMPLETENESS.value,
             "score": comp_score,
@@ -281,7 +389,7 @@ class MockProvider(LLMProvider):
         if any(p in response_lower for p in ["in other words", "to clarify", "specifically"]):
             clarity_score += 1
 
-        clarity_score = max(1, min(5, round(clarity_score + _version_bias)))
+        clarity_score = max(1, min(5, clarity_score))
         scores.append({
             "score_type": ScoreType.CLARITY.value,
             "score": clarity_score,
@@ -333,4 +441,6 @@ class MockProvider(LLMProvider):
             "summary_of_issue": summary,
             "what_to_fix": what_to_fix,
             "rag_citations": [],
+            "_usage": {"prompt_tokens": 100, "completion_tokens": 50},
+            "_model": model or "mock-model",
         }
