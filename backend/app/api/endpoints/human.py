@@ -1,5 +1,6 @@
 """Human review and report endpoints."""
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...db.repository import EvalItemRepository, HumanQueueRepository, HumanReviewRepository
@@ -33,6 +34,12 @@ async def submit_human_review(
     if not queue_item:
         raise HTTPException(status_code=404, detail="Queue item not found")
 
+    if queue_item.reviewed:
+        raise HTTPException(
+            status_code=409,
+            detail="Queue item has already been reviewed",
+        )
+
     if queue_item.evaluation_id != review.evaluation_id:
         raise HTTPException(
             status_code=400,
@@ -56,6 +63,12 @@ async def submit_human_review(
         )
         db.commit()
         return created_review
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Queue item has already been reviewed (concurrent request)",
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to submit human review: {e}")

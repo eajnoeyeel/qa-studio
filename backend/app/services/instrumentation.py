@@ -55,22 +55,33 @@ class LangfuseInstrumentation:
         trace_id: str,
         name: str,
         tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        input: Optional[Dict[str, Any]] = None,
     ):
         """Create a Langfuse trace via a root span with trace-level metadata."""
         if self.enabled and self.langfuse:
             try:
                 root_span = self.langfuse.start_span(
                     name=name,
+                    input=input,
                     metadata=metadata or {},
                 )
                 # Populate trace-level fields so the Langfuse UI shows
                 # Name, Tags, and Metadata in the traces list view.
-                root_span.update_trace(
-                    name=name,
-                    tags=tags or [],
-                    metadata=metadata or {},
-                )
+                trace_kwargs: Dict[str, Any] = {
+                    "name": name,
+                    "tags": tags or [],
+                    "metadata": metadata or {},
+                }
+                if session_id:
+                    trace_kwargs["session_id"] = session_id
+                if user_id:
+                    trace_kwargs["user_id"] = user_id
+                if input:
+                    trace_kwargs["input"] = input
+                root_span.update_trace(**trace_kwargs)
                 return LangfuseTraceWrapper(
                     trace_id=trace_id,
                     name=name,
@@ -126,26 +137,50 @@ class LangfuseInstrumentation:
 
         self._log_span(trace, name, input_data, latency_ms, error, output_data=output_data)
 
+    def record_generation(
+        self,
+        trace,
+        name: str,
+        input_data: Optional[Dict[str, Any]] = None,
+        output_data: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+        usage: Optional[Dict[str, int]] = None,
+        latency_ms: Optional[float] = None,
+        error: Optional[str] = None,
+    ):
+        """Record a generation span (LLM call with model/usage metadata)."""
+        if hasattr(trace, 'record_child_generation'):
+            trace.record_child_generation(
+                name, input_data, output_data,
+                model=model, usage=usage, latency_ms=latency_ms, error=error,
+            )
+
+        self._log_span(trace, name, input_data, latency_ms, error, output_data=output_data)
+
     def record_score(
         self,
         trace,
         name: str,
         value: float,
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        score_id: Optional[str] = None,
     ):
         """Record a score on the trace."""
         if hasattr(trace, 'score'):
-            trace.score(name=name, value=value, comment=comment)
+            trace.score(name=name, value=value, comment=comment, score_id=score_id)
         elif self.enabled and self.langfuse:
             try:
                 trace_id = getattr(trace, 'trace_id', None)
-                self.langfuse.create_score(
-                    name=name,
-                    value=value,
-                    trace_id=trace_id,
-                    comment=comment,
-                    data_type="NUMERIC",
-                )
+                score_kwargs: Dict[str, Any] = {
+                    "name": name,
+                    "value": value,
+                    "trace_id": trace_id,
+                    "comment": comment,
+                    "data_type": "NUMERIC",
+                }
+                if score_id:
+                    score_kwargs["id"] = score_id
+                self.langfuse.create_score(**score_kwargs)
             except Exception as e:
                 logger.error(f"Failed to record Langfuse score: {e}")
 
@@ -265,6 +300,56 @@ class LangfuseInstrumentation:
                 logger.error(f"Failed to create Langfuse prompt '{name}': {e}")
         return None
 
+    # ==================== Datasets & Experiments ====================
+
+    def create_dataset(self, name: str, description: str = "") -> Optional[str]:
+        """Create a Langfuse dataset. Returns dataset name or None."""
+        if self.enabled and self.langfuse:
+            try:
+                self.langfuse.create_dataset(name=name, description=description)
+                return name
+            except Exception as e:
+                logger.error(f"Failed to create Langfuse dataset '{name}': {e}")
+        return None
+
+    def create_dataset_items(self, dataset_name: str, items: List[dict]) -> int:
+        """Add items to a Langfuse dataset. Returns count of items created."""
+        count = 0
+        if self.enabled and self.langfuse:
+            for item in items:
+                try:
+                    self.langfuse.create_dataset_item(
+                        dataset_name=dataset_name,
+                        input=item.get("input", {}),
+                        expected_output=item.get("expected_output"),
+                        metadata=item.get("metadata"),
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.error(f"Failed to create dataset item: {e}")
+        return count
+
+    def run_experiment(
+        self,
+        dataset_name: str,
+        experiment_name: str,
+        task_fn,
+        evaluator_fns: Optional[List] = None,
+    ) -> Optional[dict]:
+        """Run a Langfuse experiment. Returns experiment summary or None."""
+        if self.enabled and self.langfuse:
+            try:
+                dataset = self.langfuse.get_dataset(dataset_name)
+                result = dataset.run_experiment(
+                    name=experiment_name,
+                    run_function=task_fn,
+                    evaluators=evaluator_fns or [],
+                )
+                return {"experiment_name": experiment_name, "dataset_name": dataset_name}
+            except Exception as e:
+                logger.error(f"Failed to run Langfuse experiment '{experiment_name}': {e}")
+        return None
+
     def update_prompt_label(self, name: str, version: int, new_label: str) -> bool:
         """Update a prompt version's label (e.g., set to 'production')."""
         if self.enabled and self.langfuse:
@@ -305,6 +390,28 @@ class LangfuseTraceWrapper:
         except Exception as e:
             logger.error(f"Failed to record Langfuse child span: {e}")
 
+    def record_child_generation(self, name, input_data=None, output_data=None,
+                                model=None, usage=None, latency_ms=None, error=None):
+        """Record a child generation observation (not a span).
+
+        Langfuse uses the generation type for LLM calls — model, usage,
+        and cost are first-class fields that drive the cost dashboard.
+        Using start_span() here would bury them in metadata.
+        """
+        try:
+            gen = self.root_span.start_generation(
+                name=name,
+                model=model,
+                input=input_data,
+                output=output_data or {},
+                usage_details=usage,
+                level="ERROR" if error else "DEFAULT",
+                status_message="error" if error else "success",
+            )
+            gen.end()
+        except Exception as e:
+            logger.error(f"Failed to record Langfuse child generation: {e}")
+
     def span(self, name: str, input: Optional[Dict] = None):
         """Create a child span on the root span."""
         try:
@@ -312,21 +419,35 @@ class LangfuseTraceWrapper:
         except Exception:
             return MockSpan(name, input)
 
-    def score(self, name: str, value: float, comment: Optional[str] = None):
+    def score(self, name: str, value: float, comment: Optional[str] = None,
+              score_id: Optional[str] = None):
         """Record a score on this trace."""
         try:
-            self.root_span.score_trace(
-                name=name,
-                value=value,
-                comment=comment,
-                data_type="NUMERIC",
-            )
+            score_kwargs: Dict[str, Any] = {
+                "name": name,
+                "value": value,
+                "comment": comment,
+                "data_type": "NUMERIC",
+            }
+            if score_id:
+                score_kwargs["score_id"] = score_id
+            self.root_span.score_trace(**score_kwargs)
         except Exception as e:
             logger.error(f"Failed to record score: {e}")
 
     def update(self, **kwargs):
-        """Update trace-level fields (input, output, tags)."""
+        """Update trace-level fields (input, output, tags).
+
+        Tags are merged (appended) rather than replaced so successive
+        update() calls accumulate tags instead of overwriting.
+        """
         try:
+            if "tags" in kwargs:
+                new_tags = kwargs["tags"]
+                for tag in new_tags:
+                    if tag not in self.tags:
+                        self.tags.append(tag)
+                kwargs["tags"] = list(self.tags)
             self.root_span.update_trace(**kwargs)
         except Exception as e:
             logger.error(f"Failed to update Langfuse trace: {e}")
@@ -363,16 +484,34 @@ class MockTrace:
         """Record a child span (no-op in mock)."""
         self.spans.append({"name": name, "latency_ms": latency_ms, "error": error})
 
+    def record_child_generation(self, name, input_data=None, output_data=None,
+                                model=None, usage=None, latency_ms=None, error=None):
+        """Record a child generation span (no-op in mock)."""
+        self.spans.append({"name": name, "type": "generation", "model": model,
+                           "usage": usage, "latency_ms": latency_ms, "error": error})
+
     def span(self, name: str, input: Optional[Dict] = None):
         """Create a mock span."""
         span = MockSpan(name, input)
         self.spans.append(span)
         return span
 
-    def score(self, name: str, value: float, comment: Optional[str] = None):
+    def score(self, name: str, value: float, comment: Optional[str] = None,
+              score_id: Optional[str] = None):
         """Record a mock score."""
-        self.scores.append({"name": name, "value": value, "comment": comment})
+        self.scores.append({"name": name, "value": value, "comment": comment, "id": score_id})
         logger.info(f"Score: {name}={value}")
+
+    def update(self, **kwargs):
+        """Update trace-level fields (mock — just merges tags)."""
+        if "tags" in kwargs:
+            for tag in kwargs["tags"]:
+                if tag not in self.tags:
+                    self.tags.append(tag)
+        if "output" in kwargs:
+            self.output = kwargs["output"]
+        if "input" in kwargs:
+            self.input = kwargs["input"]
 
 
 class MockSpan:

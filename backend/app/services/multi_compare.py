@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..models.schemas import (
     MultiComparisonRequest, MultiComparisonSummary, ConfigRanking,
-    MultiExperimentConfig, DatasetSplit,
+    EvaluationKind, MultiExperimentConfig, DatasetSplit,
 )
 from ..providers.base import LLMProvider
 from ..rag.retriever import RAGRetriever
@@ -101,6 +101,7 @@ class MultiCompareService:
                         prompt_version=cfg.prompt_version,
                         model_version=cfg.model_version,
                         docs_version=request.docs_version,
+                        evaluation_kind=EvaluationKind.EXPERIMENT,
                     )
                     if result.get("error") or not result.get("evaluation_id"):
                         logger.warning(

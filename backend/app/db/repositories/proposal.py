@@ -19,6 +19,7 @@ class ProposalRepository:
         model = PromptProposalModel(
             id=generate_id(),
             prompt_name=proposal.prompt_name,
+            prompt_type=proposal.prompt_type,
             current_version=proposal.current_version,
             proposed_prompt=proposal.proposed_prompt,
             status="pending",

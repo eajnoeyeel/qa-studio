@@ -1,13 +1,21 @@
-"""Approval workflow proposal endpoints."""
+"""Approval workflow proposal endpoints + improvement cycle."""
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ...models.schemas import PromptProposalCreate, PromptProposalInDB, ProposalStatus
-from ...services.approval_workflow import ApprovalWorkflow
+from ...models.schemas import (
+    ImprovementCycleRequest,
+    ImprovementCycleResponse,
+    PromptProposalCreate,
+    PromptProposalInDB,
+    ProposalStatus,
+)
+from ...providers import get_provider
+from ...services.approval_workflow import ApprovalWorkflow, ProposalNotFoundError
+from ...services.improvement_cycle import ImprovementCycle
 from ...services.instrumentation import LangfuseInstrumentation
-from ..deps import get_db, get_instrumentation
+from ..deps import get_db, get_instrumentation, SessionLocal, settings
 
 router = APIRouter()
 
@@ -56,6 +64,8 @@ async def start_proposal_test(
     workflow = ApprovalWorkflow(db_session=db)
     try:
         return workflow.start_test(proposal_id, experiment_id=experiment_id)
+    except ProposalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -70,6 +80,8 @@ async def approve_proposal(
     workflow = ApprovalWorkflow(db_session=db)
     try:
         return workflow.approve(proposal_id, improvement_metrics=improvement_metrics)
+    except ProposalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -83,6 +95,8 @@ async def reject_proposal(
     workflow = ApprovalWorkflow(db_session=db)
     try:
         return workflow.reject(proposal_id)
+    except ProposalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -97,5 +111,34 @@ async def deploy_proposal(
     workflow = ApprovalWorkflow(db_session=db, instrumentation=instrumentation)
     try:
         return workflow.deploy(proposal_id)
+    except ProposalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/improve/run-cycle", response_model=ImprovementCycleResponse)
+async def run_improvement_cycle(
+    request: ImprovementCycleRequest,
+    db: Session = Depends(get_db),
+    instrumentation: LangfuseInstrumentation = Depends(get_instrumentation),
+):
+    """Run a full self-improvement cycle: patterns → suggest → experiment → proposal."""
+    provider = get_provider(
+        settings.LLM_PROVIDER,
+        api_key=settings.OPENAI_API_KEY,
+        model=settings.LLM_MODEL,
+        instrumentation=instrumentation,
+    )
+    cycle = ImprovementCycle(
+        provider=provider,
+        db_session=db,
+        instrumentation=instrumentation,
+        session_factory=SessionLocal,
+    )
+    try:
+        return await cycle.run(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -12,6 +12,11 @@ from ..models.schemas import (
 
 logger = logging.getLogger(__name__)
 
+
+class ProposalNotFoundError(ValueError):
+    """Raised when a proposal ID does not exist."""
+    pass
+
 # Valid state transitions
 TRANSITIONS = {
     ProposalStatus.PENDING: {ProposalStatus.TESTING, ProposalStatus.REJECTED},
@@ -40,6 +45,12 @@ class ApprovalWorkflow:
 
     def create_proposal(self, data: PromptProposalCreate) -> PromptProposalInDB:
         """Create a new proposal in PENDING state."""
+        # Guard: block judge prompt modifications from the self-improvement cycle
+        if data.prompt_type == "judge_prompt" or "judge" in data.prompt_name.lower():
+            raise ValueError(
+                f"Cannot create proposal targeting judge prompt '{data.prompt_name}'. "
+                "The self-improvement cycle only modifies the system prompt."
+            )
         from ..db.repository import ProposalRepository
         repo = ProposalRepository(self.db)
         return repo.create(data)
@@ -148,7 +159,7 @@ class ApprovalWorkflow:
     def _get_or_raise(self, proposal_id: str) -> PromptProposalInDB:
         proposal = self.get_proposal(proposal_id)
         if not proposal:
-            raise ValueError(f"Proposal not found: {proposal_id}")
+            raise ProposalNotFoundError(f"Proposal not found: {proposal_id}")
         return proposal
 
     def _deploy_to_langfuse(self, proposal: PromptProposalInDB) -> Optional[int]:

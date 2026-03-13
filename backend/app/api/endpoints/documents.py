@@ -50,6 +50,7 @@ async def reindex_documents(db: Session = Depends(get_db)):
             )
         doc_repo.delete_not_in_doc_ids(indexed_doc_ids)
 
-    set_rag_retriever(RAGRetriever(indexer))
+    if success:
+        set_rag_retriever(RAGRetriever(indexer))
 
     return {"success": success, "document_count": len(indexer.documents)}

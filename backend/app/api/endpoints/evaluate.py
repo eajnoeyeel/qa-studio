@@ -1,5 +1,6 @@
 """Evaluation endpoints."""
 import asyncio
+import time
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -48,12 +49,15 @@ async def evaluate_run(
         instrumentation=instrumentation,
     )
 
+    session_id = f"eval_run_{request.prompt_version}_{request.model_version}_{request.docs_version}_{int(time.time())}"
+
     pipeline = EvaluationPipeline(
         provider=provider,
         retriever=retriever,
         instrumentation=instrumentation,
         db_session=db,
         session_factory=SessionLocal,
+        session_id=session_id,
     )
 
     eval_repo = EvaluationRepository(db)
