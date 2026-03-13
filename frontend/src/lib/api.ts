@@ -97,6 +97,31 @@ export interface Experiment {
   completed_at?: string;
 }
 
+export interface Proposal {
+  id: string;
+  prompt_name: string;
+  current_version?: string;
+  proposed_prompt: string;
+  proposed_langfuse_version?: string;
+  status: 'pending' | 'testing' | 'approved' | 'rejected' | 'deployed';
+  test_experiment_id?: string;
+  improvement_metrics: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  deployed_at?: string;
+}
+
+export interface CycleResult {
+  proposal_id: string;
+  patterns_found: number;
+  suggestion_rationale: string;
+  experiment_id?: string;
+  langfuse_experiment_url?: string;
+  avg_scores_baseline: Record<string, number>;
+  avg_scores_candidate: Record<string, number>;
+}
+
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
     headers: {
@@ -196,6 +221,30 @@ export const api = {
       tag_distribution: Record<string, number>;
       human_queue_stats: Record<string, number>;
     }>(`/reports/summary?dataset_split=${split}`),
+
+  // Proposals
+  listProposals: (status?: string) => {
+    const params = status ? `?status=${status}` : '';
+    return fetchAPI<Proposal[]>(`/proposals${params}`);
+  },
+
+  approveProposal: (id: string, metrics?: Record<string, unknown>) =>
+    fetchAPI<Proposal>(`/proposals/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(metrics || null),
+    }),
+
+  deployProposal: (id: string) =>
+    fetchAPI<Proposal>(`/proposals/${id}/deploy`, {
+      method: 'POST',
+    }),
+
+  // Improvement Cycle
+  runImprovementCycle: (data: { dataset_split: string; limit?: number; prompt_name?: string }) =>
+    fetchAPI<CycleResult>('/improve/run-cycle', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Health
   health: () => fetchAPI<{ status: string; langfuse_enabled: boolean; llm_provider: string }>('/health'),
