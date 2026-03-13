@@ -4,8 +4,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
+from app.db.repository import EvalItemRepository, EvaluationRepository, JudgeOutputRepository
+from app.models.schemas import EvalItemCreate, EvaluationCreate, EvaluationKind, JudgeOutput
 from app.services.pattern_analyzer import PatternAnalyzer
-from app.models.schemas import PatternAnalysisResult
+from app.models.schemas import GateResult, PatternAnalysisResult, ScoreResult
 
 
 def _make_eval_model(eval_id, tags, scores, label="reasoning"):
@@ -187,3 +189,102 @@ class TestPatternAnalyzerPatternKeys:
         assert "hallucination" in result
         # No self-pair since deduplicated
         assert "hallucination|hallucination" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_filters_dataset_split_and_evaluation_kind(db_session):
+    item_repo = EvalItemRepository(db_session)
+    eval_repo = EvaluationRepository(db_session)
+    judge_repo = JudgeOutputRepository(db_session)
+
+    dev_item = item_repo.create(
+        EvalItemCreate(
+            external_id="pattern-dev",
+            split="dev",
+            question="What is recursion?",
+            response="A recursive explanation.",
+        )
+    )
+    test_item = item_repo.create(
+        EvalItemCreate(
+            external_id="pattern-test",
+            split="test",
+            question="What is gravity?",
+            response="Gravity explanation.",
+        )
+    )
+
+    dataset_eval = eval_repo.create(
+        EvaluationCreate(
+            item_id=dev_item.id,
+            prompt_version="dataset_v1",
+            model_version="mock",
+            docs_version="v1",
+            evaluation_kind=EvaluationKind.DATASET,
+        )
+    )
+    experiment_eval = eval_repo.create(
+        EvaluationCreate(
+            item_id=dev_item.id,
+            prompt_version="candidate_v1",
+            model_version="mock",
+            docs_version="v1",
+            evaluation_kind=EvaluationKind.EXPERIMENT,
+        )
+    )
+    other_split_eval = eval_repo.create(
+        EvaluationCreate(
+            item_id=test_item.id,
+            prompt_version="dataset_v1",
+            model_version="mock",
+            docs_version="v1",
+            evaluation_kind=EvaluationKind.DATASET,
+        )
+    )
+
+    judge_repo.create(
+        dataset_eval.id,
+        JudgeOutput(
+            gates=[GateResult(gate_type="hallucination", passed=False)],
+            scores=[ScoreResult(score_type="completeness", score=2, justification="low")],
+            failure_tags=["hallucination"],
+            summary_of_issue="hallucination",
+            what_to_fix="stay grounded",
+            rag_citations=[],
+        ),
+    )
+    judge_repo.create(
+        experiment_eval.id,
+        JudgeOutput(
+            gates=[GateResult(gate_type="hallucination", passed=False)],
+            scores=[ScoreResult(score_type="completeness", score=2, justification="low")],
+            failure_tags=["logic_error"],
+            summary_of_issue="logic_error",
+            what_to_fix="fix logic",
+            rag_citations=[],
+        ),
+    )
+    judge_repo.create(
+        other_split_eval.id,
+        JudgeOutput(
+            gates=[GateResult(gate_type="hallucination", passed=False)],
+            scores=[ScoreResult(score_type="completeness", score=2, justification="low")],
+            failure_tags=["off_topic"],
+            summary_of_issue="off_topic",
+            what_to_fix="stay on topic",
+            rag_citations=[],
+        ),
+    )
+
+    analyzer = PatternAnalyzer(db_session=db_session)
+    result = await analyzer.analyze(
+        dataset_split="dev",
+        evaluation_kind=EvaluationKind.DATASET,
+        item_ids=[dev_item.id, test_item.id],
+        min_frequency=1,
+        top_k=10,
+    )
+
+    assert result.total_evaluations_analyzed == 1
+    assert result.dataset_split == "dev"
+    assert [pattern.tags for pattern in result.top_patterns] == [["hallucination"]]

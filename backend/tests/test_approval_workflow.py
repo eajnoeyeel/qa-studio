@@ -11,7 +11,7 @@ def _make_proposal(status: ProposalStatus = ProposalStatus.PENDING) -> PromptPro
     """Create a minimal PromptProposalInDB."""
     return PromptProposalInDB(
         id="test-proposal-id",
-        prompt_name="judge_evaluate",
+        prompt_name="system_prompt",
         current_version="v1",
         proposed_prompt="Improved prompt text here.",
         proposed_langfuse_version=None,
@@ -62,7 +62,7 @@ class TestApprovalWorkflow:
 
     def test_create_proposal(self):
         mock_data = PromptProposalCreate(
-            prompt_name="judge_evaluate",
+            prompt_name="system_prompt",
             proposed_prompt="New improved prompt.",
         )
         expected = _make_proposal()
@@ -75,7 +75,7 @@ class TestApprovalWorkflow:
             result = self.workflow.create_proposal(mock_data)
 
         assert result.status == ProposalStatus.PENDING
-        assert result.prompt_name == "judge_evaluate"
+        assert result.prompt_name == "system_prompt"
 
     def test_start_test_transitions_pending_to_testing(self):
         proposal = _make_proposal(ProposalStatus.PENDING)
@@ -173,7 +173,7 @@ class TestApprovalWorkflow:
                 workflow.deploy("test-proposal-id")
 
         mock_instrumentation.create_prompt.assert_called_once_with(
-            name="judge_evaluate",
+            name="system_prompt",
             prompt="Improved prompt text here.",
             labels=["production"],
         )
@@ -185,6 +185,23 @@ class TestApprovalWorkflow:
         with patch.object(workflow, "get_proposal", return_value=proposal):
             with pytest.raises(ValueError, match="Langfuse is not configured"):
                 workflow.deploy("test-proposal-id")
+
+    def test_create_proposal_blocks_judge_prompt_by_name(self):
+        mock_data = PromptProposalCreate(
+            prompt_name="judge_evaluate",
+            proposed_prompt="Attempt to modify judge.",
+        )
+        with pytest.raises(ValueError, match="Cannot create proposal targeting judge prompt"):
+            self.workflow.create_proposal(mock_data)
+
+    def test_create_proposal_blocks_judge_prompt_by_type(self):
+        mock_data = PromptProposalCreate(
+            prompt_name="some_prompt",
+            prompt_type="judge_prompt",
+            proposed_prompt="Attempt to modify judge.",
+        )
+        with pytest.raises(ValueError, match="Cannot create proposal targeting judge prompt"):
+            self.workflow.create_proposal(mock_data)
 
 
 class TestApprovalWorkflowFullCycle:

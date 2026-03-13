@@ -101,3 +101,34 @@ async def test_complete_returns_response(provider):
     assert result.content is not None
     assert result.model == "mock-model"
     assert result.usage is not None
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_system_prompt_guidance(provider):
+    """System-prompt guidance should change generated quality in mock mode."""
+    question = "What will the weather be like tomorrow?"
+
+    baseline = await provider.generate(
+        question=question,
+        system_prompt="You are a helpful assistant.",
+    )
+    guarded = await provider.generate(
+        question=question,
+        system_prompt=(
+            "Answer only from supported information and state uncertainty when evidence is missing. "
+            "Address every part of the user's request."
+        ),
+    )
+
+    baseline_eval = await provider.evaluate(question, baseline.content, rubric={})
+    guarded_eval = await provider.evaluate(question, guarded.content, rubric={})
+
+    baseline_hallucination = next(
+        gate for gate in baseline_eval["gates"] if gate["gate_type"] == "hallucination"
+    )
+    guarded_hallucination = next(
+        gate for gate in guarded_eval["gates"] if gate["gate_type"] == "hallucination"
+    )
+
+    assert baseline_hallucination["passed"] is False
+    assert guarded_hallucination["passed"] is True
