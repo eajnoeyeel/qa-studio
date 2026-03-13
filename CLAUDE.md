@@ -2,9 +2,33 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Project Goal
 
-QA Studio — automated quality assessment platform for Q/A responses. Evaluates LLM-generated answers through gate checks (factual safety, hallucination) and 4-dimension scoring (instruction_following, reasoning_quality, completeness, clarity), with RAG-based evidence retrieval, human-in-the-loop review, A/B experimentation, and an automated self-improvement cycle. Primary dataset: UltraFeedback (4 candidates per scenario with GPT-4 annotations).
+QA Studio is a **self-improving response generation platform**. The goal is to automatically improve the **system prompt** used to generate LLM responses, creating a closed-loop cycle:
+
+1. **Evaluate** existing LLM-generated responses (from UltraFeedback dataset) using a judge with rubric-based scoring
+2. **Analyze failure patterns** — what goes wrong in the responses (over_verbose, hallucination, logic_error, etc.)
+3. **Improve the system/generation prompt** — use pattern analysis to suggest a better system prompt that fixes the identified issues
+4. **A/B test** — generate NEW responses with the improved system prompt, evaluate them, compare with baseline
+5. **Deploy** — if the improved system prompt produces better responses, promote it to production
+
+**The thing being improved is the SYSTEM PROMPT (response generation prompt), NOT the judge/evaluation prompt.** The judge is a measurement tool — it stays fixed. The system prompt is what gets better over time.
+
+### What each component does
+
+| Component | Role | What it does NOT do |
+|---|---|---|
+| **Judge/Evaluator** (`pipeline.py`) | Measures response quality (fixed rubric) | Does NOT get improved by the cycle |
+| **Pattern Analyzer** (`pattern_analyzer.py`) | Finds recurring response quality issues | — |
+| **Prompt Suggester** (`prompt_suggester.py`) | Suggests improvements to the **system prompt** | Must NOT target the judge prompt |
+| **A/B Experiment** (`experiment.py`) | Generates responses with old vs new system prompt, evaluates both | — |
+| **Approval Workflow** (`approval_workflow.py`) | Deploys improved **system prompt** to Langfuse | Must NOT deploy judge prompts |
+
+### Dataset
+
+Primary dataset: UltraFeedback — 4 candidate responses per question from different LLMs (alpaca-7b, vicuna, starchat, falcon) with GPT-4 annotations as ground truth. These are pre-existing LLM-generated responses used for the initial evaluation phase.
+
+## Project Overview (Technical)
 
 ## Coding Guidelines
 
@@ -123,9 +147,11 @@ curl -X POST "http://localhost:8000/api/v1/evaluate/run" \
 
 **Backend** (`backend/app/`): FastAPI app with PostgreSQL (SQLAlchemy). Routes split across `api/endpoints/`. Config via `pydantic-settings` from `.env`. SQLite still used for tests via `conftest.py`.
 
-**Evaluation Pipeline** (`services/pipeline.py`): Per-item flow: prepare → mask PII (regex) → classify (taxonomy) → RAG retrieve (masked) → judge (masked, gates + scores) → sampling decision (human queue). PII-masked text is used for all downstream steps (RAG, judge) — raw text never leaves the masking boundary.
+**Evaluation Pipeline** (`services/pipeline.py`): Per-item flow: prepare → mask PII (regex) → classify (taxonomy) → RAG retrieve (masked) → judge (masked, gates + scores) → sampling decision (human queue). PII-masked text is used for all downstream steps (RAG, judge) — raw text never leaves the masking boundary. The judge is a fixed measurement tool — it does NOT get modified by the self-improvement cycle.
 
-**LLM Providers** (`providers/`): Strategy pattern via `factory.py`. `MockProvider` for testing (keyword-based, version-aware scoring for meaningful A/B results), `OpenAIProvider` for production. Set via `LLM_PROVIDER` env var.
+**Self-Improvement Cycle**: The cycle improves the **system/generation prompt**, not the judge. It refreshes dataset evaluations when coverage is stale or missing, analyzes failure tags from those dataset evaluations, proposes a better system prompt, generates new baseline/candidate responses for A/B judging, then routes the winning prompt through approval and deployment.
+
+**LLM Providers** (`providers/`): Strategy pattern via `factory.py`. `MockProvider` for testing (keyword-based classification, prompt-aware generation, rule-based judging), `OpenAIProvider` for production. Set via `LLM_PROVIDER` env var.
 
 **RAG** (`rag/`): `RAGIndexer` builds FAISS index from markdown docs in `docs/` (policies, help center, rubrics). `RAGRetriever` queries the index. Mock embeddings when no OpenAI key.
 
@@ -157,13 +183,21 @@ Duplicate rows are skipped on ingest when `external_id` matches an existing reco
 ### Key Behaviors
 
 - **evaluate/run** skips items that already have an evaluation for the same (prompt_version, model_version, docs_version) triple.
-- **Pattern analysis** deduplicates by using only the latest evaluation per item to avoid count inflation.
+- **Pattern analysis** deduplicates by using only the latest dataset evaluation per item to avoid count inflation and excludes experiment evaluations from the prompt-improvement corpus.
 - **Novel tag routing** persists across pipeline instances (process-level set) so the first occurrence is truly novel.
-- **Mock provider** produces version-aware scores: different `prompt_label` values yield deterministic but different scores, so A/B experiments show real deltas even in mock mode.
+- **Mock provider** generates prompt-sensitive responses. A/B deltas in mock mode should come from response changes caused by the system prompt, not from synthetic judge bias.
+
+### Self-Improvement Invariants
+
+- **The judge prompt is FIXED.** The self-improvement cycle must never modify, suggest changes to, or deploy changes to the judge/evaluation prompt. The judge is a measurement instrument.
+- **The system prompt is what improves.** Pattern analysis → suggestion → A/B test → deploy all target the system/generation prompt.
+- **A/B testing requires generation.** To test an improved system prompt, the experiment must generate new responses with it (not just re-evaluate existing responses with a different judge prompt).
+- **Langfuse prompt registry** stores versioned system prompts (not judge prompts). The `production` label points to the current best system prompt.
 
 ## Environment
 
 Backend requires `.env` in `backend/` (copy from `.env.example`). Key settings:
+
 - `DATABASE_URL=postgresql://qa_studio:qa_studio@localhost:5433/qa_studio` (requires `docker compose up -d`)
 - `LLM_PROVIDER=mock` for local dev (no API keys needed)
 - `LLM_PROVIDER=openai` + `OPENAI_API_KEY` for production

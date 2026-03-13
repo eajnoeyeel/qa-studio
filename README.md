@@ -10,7 +10,7 @@ Evaluates LLM-generated answers through gate checks and multi-dimension scoring,
 - **RAG-based Evidence**: FAISS vector index for evidence-based hallucination detection
 - **Human Review Queue**: Smart sampling for edge cases (gate failures, low scores, novel tags)
 - **A/B Experiments**: Compare prompt/model versions with statistical analysis
-- **Self-Improvement Cycle**: Pattern analysis, prompt suggestions, proposals, automated A/B testing
+- **Self-Improvement Cycle**: Refreshes dataset evaluations when needed, analyzes failure tags, suggests system-prompt improvements, and A/B tests newly generated responses
 - **Langfuse Observability**: Full tracing with graceful fallback when unavailable
 - **n8n Integration**: Schedule-driven workflows for automated pipeline execution
 
@@ -162,7 +162,6 @@ QA Studio/
 ├── backend/
 │   ├── app/
 │   │   ├── api/           # FastAPI routes
-│   │   ├── chains/        # LCEL chain wrappers (optional)
 │   │   ├── core/          # Config, rubric, taxonomy
 │   │   ├── db/            # Repository pattern
 │   │   ├── models/        # Pydantic schemas, SQLAlchemy models
