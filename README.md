@@ -4,6 +4,32 @@
 
 Evaluates LLM-generated answers through gate checks and multi-dimension scoring, with RAG-based evidence retrieval, human-in-the-loop review, A/B experimentation, and an automated self-improvement cycle.
 
+## Demo
+
+### 🔄 Self-Improvement Cycle — Prompt Diff & A/B Comparison
+
+> Pattern analysis → Prompt improvement suggestion → Baseline vs Candidate scoring → Human approval
+
+![Self-Improvement Page](docs/assets/demo_improve_page.gif)
+
+### 📊 Dashboard & Data Overview
+
+> Evaluation statistics, gate fail rates, avg scores, and item catalog with multiple LLM candidate sources
+
+![Dashboard & Items](docs/assets/demo_dashboard_items.gif)
+
+### 🧪 A/B Experiment Results
+
+> Side-by-side comparison of prompt/model versions with statistical score breakdowns
+
+![Experiments](docs/assets/demo_experiments.gif)
+
+### 👤 Human-in-the-Loop Review Queue
+
+> Smart sampling of edge cases (gate failures, low scores) for human expert review
+
+![Review Queue](docs/assets/demo_review_queue.gif)
+
 ## Features
 
 - **Automated Evaluation**: Gate checks (factual_safety, hallucination) + 4-dimension scoring (instruction_following, reasoning_quality, completeness, clarity)
