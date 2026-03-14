@@ -115,6 +115,7 @@ class ImprovementCycle:
                 prompt_name=request.prompt_name,
                 prompt_type="system_prompt",
                 current_version="production",
+                current_prompt=current_prompt,
                 proposed_prompt=suggestion.suggested_prompt,
                 created_by="improvement_cycle",
             )

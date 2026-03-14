@@ -319,6 +319,7 @@ class PromptProposalModel(Base):
     prompt_name = Column(String, nullable=False, index=True)    # "system_prompt", "classify"
     prompt_type = Column(String, nullable=False, default="system_prompt")  # "system_prompt" | "judge_prompt"
     current_version = Column(String, nullable=True)
+    current_prompt = Column(Text, nullable=True)
     proposed_prompt = Column(Text, nullable=False)
     proposed_langfuse_version = Column(String, nullable=True)
     status = Column(String, nullable=False, default="pending", index=True)

@@ -101,6 +101,7 @@ export interface Proposal {
   id: string;
   prompt_name: string;
   current_version?: string;
+  current_prompt?: string;
   proposed_prompt: string;
   proposed_langfuse_version?: string;
   status: 'pending' | 'testing' | 'approved' | 'rejected' | 'deployed';

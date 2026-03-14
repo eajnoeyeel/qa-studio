@@ -155,12 +155,16 @@ def _run_migrations():
                     "ON failure_patterns(dataset_split)"
                 ))
 
-        # Add prompt_type column to prompt_proposals if missing
+        # Add columns to prompt_proposals if missing
         if inspector.has_table("prompt_proposals"):
             proposal_cols = {c["name"] for c in inspector.get_columns("prompt_proposals")}
             if "prompt_type" not in proposal_cols:
                 conn.execute(text(
                     "ALTER TABLE prompt_proposals ADD COLUMN prompt_type VARCHAR NOT NULL DEFAULT 'system_prompt'"
+                ))
+            if "current_prompt" not in proposal_cols:
+                conn.execute(text(
+                    "ALTER TABLE prompt_proposals ADD COLUMN current_prompt TEXT"
                 ))
 
         # Add unique constraints if missing

@@ -292,25 +292,48 @@ export default function ImprovePage() {
                   {/* Expanded details */}
                   {isExpanded && (
                     <div style={{ padding: '0 16px 16px' }}>
-                      {/* Proposed prompt */}
-                      <div style={{ marginTop: 8 }}>
-                        <strong>Proposed System Prompt:</strong>
-                        <pre
-                          style={{
-                            marginTop: 8,
-                            padding: 12,
-                            background: 'var(--bg-secondary, #1a1a2e)',
-                            borderRadius: 6,
-                            fontSize: '0.85rem',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            lineHeight: 1.5,
-                            maxHeight: 300,
-                            overflowY: 'auto',
-                          }}
-                        >
-                          {p.proposed_prompt}
-                        </pre>
+                      {/* Before / After prompt diff */}
+                      <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        <div>
+                          <strong style={{ color: 'var(--text-secondary)' }}>Current Prompt</strong>
+                          <pre
+                            style={{
+                              marginTop: 8,
+                              padding: 12,
+                              background: 'var(--bg-secondary, #1a1a2e)',
+                              borderRadius: 6,
+                              fontSize: '0.82rem',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              lineHeight: 1.5,
+                              maxHeight: 280,
+                              overflowY: 'auto',
+                              opacity: 0.75,
+                            }}
+                          >
+                            {p.current_prompt || `(version: ${p.current_version ?? 'production'})`}
+                          </pre>
+                        </div>
+                        <div>
+                          <strong style={{ color: '#22c55e' }}>Proposed Prompt</strong>
+                          <pre
+                            style={{
+                              marginTop: 8,
+                              padding: 12,
+                              background: 'var(--bg-secondary, #1a1a2e)',
+                              border: '1px solid #22c55e33',
+                              borderRadius: 6,
+                              fontSize: '0.82rem',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              lineHeight: 1.5,
+                              maxHeight: 280,
+                              overflowY: 'auto',
+                            }}
+                          >
+                            {p.proposed_prompt}
+                          </pre>
+                        </div>
                       </div>
 
                       {/* Experiment scores */}

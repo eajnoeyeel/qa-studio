@@ -477,6 +477,7 @@ class PromptProposalCreate(BaseModel):
     prompt_name: str
     prompt_type: str = "system_prompt"  # "system_prompt" | "judge_prompt" — prevents accidental judge modifications
     current_version: Optional[str] = None
+    current_prompt: Optional[str] = None
     proposed_prompt: str
     created_by: str = "auto"
 
@@ -505,6 +506,7 @@ class PromptProposalInDB(BaseModel):
     id: str
     prompt_name: str
     current_version: Optional[str] = None
+    current_prompt: Optional[str] = None
     proposed_prompt: str
     proposed_langfuse_version: Optional[str] = None
     status: ProposalStatus
